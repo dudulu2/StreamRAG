@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from streamrag.corpus import (
-    ChatClient, prepare, refine, build_catalog, quality_report,
+    ChatClient, prepare, refine, check_refined_complete, build_catalog, quality_report,
 )
 from streamrag.retrieval import (
     EmbeddingClient, CohereReranker, build_index, search, evaluate,
@@ -101,6 +101,8 @@ def main(argv=None):
     p = sub.add_parser("ingest", help="Embed and build a local LanceDB index")
     p.add_argument("--refined", type=Path, required=True)
     p.add_argument("--db", type=Path, required=True)
+    p.add_argument("--windows", type=Path,
+                   help="Verify complete, matching prepared windows before indexing")
     p.add_argument("--batch-size", type=int, default=16)
     add_embed_flags(p)
 
@@ -149,6 +151,8 @@ def main(argv=None):
         result = refine(args.windows, args.output, llm_client(args),
                         limit=args.limit, retries=args.retries)
     elif args.command == "ingest":
+        if args.windows:
+            check_refined_complete(args.windows, args.refined)
         result = build_index(args.refined, args.db, embedding_client(args),
                              batch_size=args.batch_size)
     elif args.command == "catalog":
@@ -165,7 +169,8 @@ def main(argv=None):
         result = evaluate(args.db, args.gold,
                           None if args.lexical_only else embedding_client(args),
                           top_k=args.top_k, candidates=args.candidates,
-                          lexical_only=args.lexical_only)
+                          lexical_only=args.lexical_only,
+                          reranker=reranker_client(args))
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n",
@@ -182,10 +187,7 @@ def main(argv=None):
                              limit=args.limit, retries=args.retries)
         if llm_summary["errors"]:
             raise RuntimeError("Refinement failed for some windows; rerun for checkpoint recovery")
-        total = sum(1 for line in refined.read_text(encoding="utf-8").splitlines() if line.strip())
-        count = sum(1 for line in windows.read_text(encoding="utf-8").splitlines() if line.strip())
-        if total != count:
-            raise RuntimeError("Pipeline incomplete: refine the remaining windows before ingest")
+        check_refined_complete(windows, refined)
         index = build_index(refined, db, embedding_client(args), batch_size=args.batch_size)
         catalog = build_catalog(refined, workdir / "stream_catalog.json")
         report = quality_report(refined, workdir / "quality_report.json")

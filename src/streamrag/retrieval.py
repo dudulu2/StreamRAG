@@ -4,11 +4,16 @@ The DB holds third-party stream evidence, never the app's user memories.
 """
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import math
 import re
+import shutil
+import tempfile
 import urllib.request
+import warnings
+from uuid import uuid4
 from pathlib import Path
 
 from .corpus import read_jsonl
@@ -93,6 +98,47 @@ class EmbeddingClient:
         return vectors if is_batch else vectors[0]
 
 
+def embedding_document(item):
+    """Embed the distilled content plus bounded source evidence.
+
+    The source excerpt helps when LLM summaries omit a useful term, without
+    allowing multi-minute transcripts to swamp the distillation or exceed API limits.
+    """
+    parts = [item.get("topic", ""), item.get("summary", "")[:900],
+             item.get("details", "")[:2400], " ".join(item.get("topics", []))[:500],
+             item.get("raw_text", "")[:1000]]
+    return "\n".join(str(part) for part in parts if part).strip()[:6500]
+
+
+def _publish_index(staging, destination):
+    """Keep an old index recoverable until a fully built replacement exists."""
+    staging, destination = Path(staging), Path(destination)
+    backup = destination.parent / ("." + destination.name + ".previous-" + uuid4().hex)
+    had_existing = destination.exists()
+    try:
+        if had_existing:
+            if not destination.is_dir():
+                raise ValueError(f"Index destination is not a directory: {destination}")
+            destination.rename(backup)
+        try:
+            staging.rename(destination)
+        except Exception:
+            if had_existing:
+                backup.rename(destination)
+            raise
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+        if backup.exists() and destination.exists():
+            try:
+                shutil.rmtree(backup)
+            except OSError as exc:
+                warnings.warn(
+                    f"Index published successfully, but old backup could not be "
+                    f"removed: {backup} ({type(exc).__name__}). Clean it up later.",
+                    RuntimeWarning, stacklevel=2)
+
+
 def build_index(refined_path, index_dir, embeddings, batch_size=16):
     rows = [row for row in read_jsonl(refined_path) if row.get("keep", False)]
     if not rows:
@@ -108,50 +154,73 @@ def build_index(refined_path, index_dir, embeddings, batch_size=16):
     vectors = []
     for offset in range(0, len(rows), batch_size):
         batch = rows[offset:offset+batch_size]
-        vectors.extend(embeddings.embed([
-            "\n".join([r.get("topic", ""), r.get("summary", ""),
-                       r.get("details", ""), " ".join(r.get("topics", []))])
-            for r in batch]))
+        vectors.extend(embeddings.embed([embedding_document(r) for r in batch]))
     if len({len(v) for v in vectors}) != 1:
         raise ValueError("Inconsistent vector dimensions")
     lancedb = _lancedb()
-    dest = Path(index_dir)
-    dest.mkdir(parents=True, exist_ok=True)
-    records = []
-    for item, vector in zip(rows, vectors):
-        full_content = "\n".join([item.get("topic", ""), item.get("summary", ""),
-                                  item.get("details", ""), item["raw_text"]])
-        records.append({
-            "id": item["id"], "source_id": item["source_id"],
-            "speaker_id": item["speaker_id"], "source_file": item["source_file"],
-            "source_sha256": item["source_sha256"],
-            "start_ms": -1 if item.get("start_ms") is None else int(item["start_ms"]),
-            "end_ms": -1 if item.get("end_ms") is None else int(item["end_ms"]),
-            "topic": item.get("topic", ""), "summary": item.get("summary", ""),
-            "details": item.get("details", ""), "raw_text": item["raw_text"],
-            "topics_json": json.dumps(item.get("topics", []), ensure_ascii=False),
-            "source_meta_json": json.dumps(item.get("source_meta", {}), ensure_ascii=False),
-            "search_terms": " ".join(terms(full_content)),
-            "vector": list(map(float, vector)),
-        })
-    db = lancedb.connect(str(dest))
-    table = db.create_table("stream_chunks", data=records, mode="overwrite")
-    # Text was segmented in advance with jieba; index whitespace-delimited terms.
-    from lancedb.index import FTS
-    table.create_index("search_terms", config=FTS(
-        base_tokenizer="whitespace", stem=False, remove_stop_words=False), replace=True)
-    manifest = {
-        "schema_version": 1, "table": "stream_chunks",
-        "row_count": len(records), "speaker_id": next(iter(speakers)),
-        "embedding_mode": embeddings.mode, "embedding_model": embeddings.model,
-        "vector_dimensions": len(vectors[0]),
-        "source_ids": sorted({r["source_id"] for r in rows}),
-        "note": "Test embedding mode is not suitable for real RAG." if embeddings.mode == "hash-test" else "",
-    }
-    (dest / "stream_rag_manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return manifest
+    if len(vectors) != len(rows):
+        raise ValueError("Embedding result count mismatch")
+    if not vectors[0] or any(not isinstance(vec, (tuple, list))
+                              or len(vec) != len(vectors[0])
+                              or any(not isinstance(x, (int, float))
+                                     or not math.isfinite(float(x)) for x in vec)
+                              for vec in vectors):
+        raise ValueError("Invalid embedding vectors")
 
+    dest = Path(index_dir)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(
+        dir=dest.parent, prefix="." + dest.name + ".building-"))
+    try:
+        records = []
+        for item, vector in zip(rows, vectors):
+            full_content = "\n".join([
+                item.get("topic", ""), item.get("summary", ""),
+                item.get("details", ""), " ".join(item.get("topics", [])),
+                item["raw_text"]
+            ])
+            records.append({
+                "id": item["id"], "source_id": item["source_id"],
+                "speaker_id": item["speaker_id"], "source_file": item["source_file"],
+                "source_sha256": item["source_sha256"],
+                "start_ms": -1 if item.get("start_ms") is None else int(item["start_ms"]),
+                "end_ms": -1 if item.get("end_ms") is None else int(item["end_ms"]),
+                "topic": item.get("topic", ""), "summary": item.get("summary", ""),
+                "details": item.get("details", ""), "raw_text": item["raw_text"],
+                "topics_json": json.dumps(item.get("topics", []), ensure_ascii=False),
+                "source_meta_json": json.dumps(
+                    item.get("source_meta", {}), ensure_ascii=False),
+                "search_terms": " ".join(terms(full_content)),
+                "vector": list(map(float, vector)),
+            })
+        db = lancedb.connect(str(staging))
+        table = db.create_table("stream_chunks", data=records, mode="overwrite")
+        from lancedb.index import FTS
+        table.create_index("search_terms", config=FTS(
+            base_tokenizer="whitespace", stem=False,
+            remove_stop_words=False), replace=True)
+        manifest = {
+            "schema_version": 1, "table": "stream_chunks",
+            "row_count": len(records), "speaker_id": next(iter(speakers)),
+            "embedding_mode": embeddings.mode, "embedding_model": embeddings.model,
+            "vector_dimensions": len(vectors[0]),
+            "source_ids": sorted({r["source_id"] for r in rows}),
+            "embedding_text_version": 2,
+            "refined_sha256": hashlib.sha256(Path(refined_path).read_bytes()).hexdigest(),
+            "note": ("Test embedding mode is not suitable for real RAG."
+                     if embeddings.mode == "hash-test" else ""),
+        }
+        (staging / "stream_rag_manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8")
+        del table, db
+        gc.collect()
+        _publish_index(staging, dest)
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return manifest
 
 def rrf_merge(vector_results, lexical_results, top_count=15, k=60):
     """Fuse independent search rankings. Do not mix incomparable raw scores."""
@@ -203,7 +272,8 @@ def open_index(index_dir):
 
 
 def search(index_dir, query, embeddings=None, *, top_k=3, candidates=15,
-           reranker=None, lexical_only=False, verbose_errors=False):
+           reranker=None, lexical_only=False, verbose_errors=False,
+           strict_reranker=False):
     table, manifest = open_index(index_dir)
     if not query.strip():
         return []
@@ -224,12 +294,23 @@ def search(index_dir, query, embeddings=None, *, top_k=3, candidates=15,
             " ".join(query_tokens), query_type="fts", fts_columns="search_terms"
         ).limit(candidates).to_list()
     merged = rrf_merge(vector_rows, lexical_rows, top_count=candidates)
+    reranker_status = "disabled"
     if reranker:
         try:
-            merged = reranker.rerank(query, merged, top_k)
+            reranked = reranker.rerank(query, merged, top_k)
+            if not reranked and merged:
+                raise ValueError("Reranker returned no results")
+            merged = reranked
+            reranker_status = "ok"
         except Exception as exc:
+            if strict_reranker:
+                raise RuntimeError("Reranker failed during evaluation; metrics unavailable") from exc
+            reranker_status = "fallback"
+            warnings.warn(
+                "Reranker failed; using RRF results instead "
+                f"({type(exc).__name__}).", RuntimeWarning, stacklevel=2)
             if verbose_errors:
-                print("Rerank failed; using RRF:", str(exc)[:180])
+                print("Rerank failed; using RRF:", type(exc).__name__)
     output = []
     for item in merged[:top_k]:
         row = item["item"]
@@ -243,26 +324,34 @@ def search(index_dir, query, embeddings=None, *, top_k=3, candidates=15,
             "start_ms": None if row["start_ms"] < 0 else row["start_ms"],
             "end_ms": None if row["end_ms"] < 0 else row["end_ms"],
             "score": item["score"],
+            "reranker_status": reranker_status,
         })
     return output
 
 
-def evaluate(index_dir, gold_file, embeddings, *, top_k=3, candidates=15, lexical_only=False):
+def evaluate(index_dir, gold_file, embeddings, *, top_k=3, candidates=15,
+             lexical_only=False, reranker=None):
     examples = read_jsonl(gold_file)
     if not examples:
         raise ValueError("Evaluation requires at least one example")
-    recalled, reciprocal, reports = 0, 0, []
+    recalled, hit, reciprocal, reports = 0.0, 0, 0.0, []
     for row in examples:
         expected = set(row.get("relevant_ids", []))
         if not expected:
             raise ValueError("Each golden query needs relevant_ids")
         results = search(index_dir, row["query"], embeddings, top_k=top_k,
-                         candidates=candidates, lexical_only=lexical_only)
+                         candidates=candidates, lexical_only=lexical_only,
+                         reranker=reranker, strict_reranker=True)
         ids = [x["id"] for x in results]
         rank = next((i for i, name in enumerate(ids, 1) if name in expected), None)
-        recalled += int(rank is not None)
+        matched = len(expected.intersection(ids))
+        recalled += matched / len(expected)
+        hit += int(rank is not None)
         reciprocal += 1.0/rank if rank else 0.0
         reports.append({"query": row["query"], "relevant_ids": sorted(expected),
-                        "retrieved_ids": ids, "first_relevant_rank": rank})
+                        "retrieved_ids": ids, "relevant_retrieved": matched,
+                        "first_relevant_rank": rank})
     return {"queries": len(examples), "recall_at_k": recalled/len(examples),
-            "mrr_at_k": reciprocal/len(examples), "k": top_k, "results": reports}
+            "hit_rate_at_k": hit/len(examples),
+            "mrr_at_k": reciprocal/len(examples), "k": top_k,
+            "reranker_enabled": reranker is not None, "results": reports}

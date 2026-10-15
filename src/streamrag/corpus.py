@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 import urllib.error
@@ -17,6 +18,22 @@ SUFFIXES = {".txt", ".srt", ".jsonl"}
 
 def digest(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def window_fingerprint(window):
+    """Fingerprint the *actual* evidence, neighboring context, and partition settings.
+
+    A matching source file hash alone does not prove two partitionings coincide.
+    """
+    fields = ("id", "source_id", "speaker_id", "speaker_verified",
+              "source_file", "source_sha256", "source_meta", "window_strategy",
+              "window_config", "discontinuous_before",
+              "segment_start", "segment_end", "start_char",
+              "end_char", "start_ms", "end_ms", "raw_text",
+              "context_before", "context_after")
+    canonical = {field: window.get(field) for field in fields}
+    return digest(json.dumps(canonical, ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":")))
 
 
 def read_jsonl(path):
@@ -67,6 +84,7 @@ def parse_source(path, speaker_id):
                                  "start_ms": ms(match[1]), "end_ms": ms(match[2]),
                                  "original_cue": lines[0] if clock_index else str(block_no)})
     elif path.suffix.lower() == ".jsonl":
+        skipped_other_speaker = False
         for line_no, line in enumerate(original.splitlines(), 1):
             if not line.strip():
                 continue
@@ -74,8 +92,11 @@ def parse_source(path, speaker_id):
             if not isinstance(item, dict) or not isinstance(item.get("text"), str):
                 raise ValueError(f"{path}:{line_no}: expected a text field")
             raw_speaker = item.get("speaker_id", item.get("speaker"))
-            if raw_speaker and str(raw_speaker) != speaker_id:
-                continue  # no attribution of someone else's words
+            if (raw_speaker is None or not str(raw_speaker).strip()
+                    or str(raw_speaker).strip().lower() in ("unknown", "none", "null", "?")
+                    or str(raw_speaker) != speaker_id):
+                skipped_other_speaker = True
+                continue  # unknown/foreign speakers must not become target speech
             if not item["text"].strip():
                 continue
             a, b = item.get("start_ms"), item.get("end_ms")
@@ -85,7 +106,9 @@ def parse_source(path, speaker_id):
                 b = round(item["end"] * 1000)
             segments.append({"segment_id": len(segments) + 1, "text": item["text"],
                              "start_ms": a, "end_ms": b, "original_line": line_no,
-                             "speaker_explicit": bool(raw_speaker)})
+                             "speaker_explicit": bool(raw_speaker),
+                             "break_before": skipped_other_speaker})
+            skipped_other_speaker = False
     elif path.suffix.lower() == ".txt":
         for match in SENTENCE.finditer(original):
             raw = match.group()
@@ -104,7 +127,8 @@ def parse_source(path, speaker_id):
 
 
 def make_windows(segments, source_id, speaker_id, source_file, source_sha256,
-                 metadata=None, duration_ms=300000, max_chars=3600):
+                 metadata=None, duration_ms=300000, max_chars=3600,
+                 original_text=None):
     if max_chars < 400 or duration_ms <= 0:
         raise ValueError("Invalid window settings")
     timed = [row.get("start_ms") is not None for row in segments]
@@ -115,7 +139,9 @@ def make_windows(segments, source_id, speaker_id, source_file, source_sha256,
     for row in segments:
         bucket = int(row["start_ms"]) // duration_ms if is_timed else None
         length = len(row["text"]) + 1
-        if group and ((is_timed and bucket != current_bucket) or size + length > max_chars):
+        if group and (row.get("break_before", False)
+                      or (is_timed and bucket != current_bucket)
+                      or size + length > max_chars):
             groups.append(group)
             group, size = [], 0
         group.append(row)
@@ -134,14 +160,22 @@ def make_windows(segments, source_id, speaker_id, source_file, source_sha256,
             "source_file": source_file, "source_sha256": source_sha256,
             "source_meta": meta,
             "window_strategy": "five_minutes" if is_timed else "character_fallback",
+            "window_config": {"duration_ms": duration_ms, "max_chars": max_chars},
+            "discontinuous_before": bool(rows[0].get("break_before", False)),
             "segment_start": rows[0]["segment_id"], "segment_end": rows[-1]["segment_id"],
             "start_char": rows[0].get("char_start"), "end_char": rows[-1].get("char_end"),
             "start_ms": rows[0].get("start_ms"), "end_ms": rows[-1].get("end_ms"),
-            "raw_text": "\n".join(row["text"] for row in rows),
+            "raw_text": (original_text[rows[0]["char_start"]:rows[-1]["char_end"]]
+                         if original_text is not None
+                         else "\n".join(row["text"] for row in rows)),
         })
     for i, row in enumerate(output):
-        row["context_before"] = output[i-1]["raw_text"][-280:] if i else ""
-        row["context_after"] = output[i+1]["raw_text"][:280] if i+1 < len(output) else ""
+        row["context_before"] = (
+            output[i-1]["raw_text"][-280:] if i and not row["discontinuous_before"] else "")
+        row["context_after"] = (
+            output[i+1]["raw_text"][:280]
+            if i+1 < len(output) and not output[i+1]["discontinuous_before"] else "")
+        row["window_signature"] = window_fingerprint(row)
     return output
 
 
@@ -172,7 +206,9 @@ def prepare(input_path, output_file, speaker_id, source_id=None,
             raise ValueError(f"Bad source_id: {file_id}")
         output.extend(make_windows(
             segments, file_id, speaker_id, name, source_hash, meta,
-            duration_ms=duration_seconds*1000, max_chars=max_chars))
+            duration_ms=duration_seconds*1000, max_chars=max_chars,
+            original_text=file.read_text(encoding="utf-8-sig")
+            if file.suffix.lower() == ".txt" else None))
     if len({row["id"] for row in output}) != len(output):
         raise ValueError("Duplicate window IDs")
     write_jsonl(output_file, output)
@@ -238,53 +274,172 @@ class ChatClient:
             }).encode("utf-8"),
             headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json"})
         with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            answer = json.load(response)["choices"][0]["message"]["content"].strip()
-        fence = chr(96)*3
+            payload = json.load(response)
+        if not isinstance(payload, dict) or not isinstance(payload.get("choices"), list) \
+                or not payload["choices"]:
+            raise ValueError("LLM response missing choices")
+        choice = payload["choices"][0]
+        if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+            raise ValueError("LLM response missing message")
+        answer = choice["message"].get("content")
+        if not isinstance(answer, str) or not answer.strip():
+            raise ValueError("LLM response has no content")
+        answer = answer.strip()
+        fence = chr(96) * 3
         if answer.startswith(fence):
             answer = re.sub("^" + fence + "(?:json)?\\s*", "", answer)
             answer = re.sub("\\s*" + fence + "$", "", answer)
         return validate_refinement(json.loads(answer))
 
 
+def _read_refine_checkpoint(path):
+    """Salvage complete JSONL lines after a crash leaves a partial last line.
+
+    Do not silently discard malformed complete lines in the middle. The rejected
+    tail is kept next to the checkpoint for forensic inspection.
+    """
+    path = Path(path)
+    if not path.exists():
+        return []
+    try:
+        rows = read_jsonl(path)
+    except (ValueError, UnicodeDecodeError):
+        data = path.read_bytes()
+        if data.endswith(b"\n"):
+            raise  # an invalid complete line isn't a partial write
+        cut = data.rfind(b"\n") + 1
+        complete = data[:cut]
+        # Validate the complete prefix before altering the original file.
+        for i, raw in enumerate(complete.splitlines(), 1):
+            if raw.strip():
+                value = json.loads(raw.decode("utf-8-sig"))
+                if not isinstance(value, dict):
+                    raise ValueError(f"Invalid checkpoint row {i}")
+        path.with_name(path.name + ".truncated-tail").write_bytes(data[cut:])
+        with path.open("r+b") as handle:
+            handle.truncate(cut)
+        rows = read_jsonl(path)
+    else:
+        # A complete final JSON row without newline is valid: normalize it.
+        if path.stat().st_size and not path.read_bytes().endswith(b"\n"):
+            with path.open("ab") as handle:
+                handle.write(b"\n")
+    return rows
+
+
+def _save_failures(path, failures):
+    """Keep failed windows on disk after each failure, clear on recovery."""
+    error_path = Path(path).with_suffix(".errors.jsonl")
+    if not failures:
+        error_path.unlink(missing_ok=True)
+        return
+    temporary = error_path.with_name(error_path.name + ".tmp")
+    write_jsonl(temporary, list(failures.values()))
+    os.replace(temporary, error_path)
+
+
+def check_refined_complete(windows_file, refined_file):
+    """Do not build an index from orphaned or missing refine checkpoints."""
+    windows = read_jsonl(windows_file)
+    refined = read_jsonl(refined_file)
+    expected = {row["id"]: row for row in windows}
+    completed = {row["id"]: row for row in refined}
+    if len(expected) != len(windows) or len(completed) != len(refined):
+        raise ValueError("Duplicate window or refined IDs")
+    if expected.keys() != completed.keys():
+        raise ValueError(
+            "Incomplete/stale refinement: missing="
+            + str(len(expected.keys() - completed.keys()))
+            + ", orphaned=" + str(len(completed.keys() - expected.keys())))
+    for id_, window in expected.items():
+        if window.get("window_signature") != window_fingerprint(window):
+            raise ValueError(f"Prepared window checksum invalid: {id_}")
+        if completed[id_].get("window_signature") != window["window_signature"]:
+            raise ValueError(f"Stale refined window: {id_}")
+        if completed[id_].get("raw_text") != window["raw_text"]:
+            raise ValueError(f"Refined raw_text was changed: {id_}")
+    return len(windows)
+
+
 def refine(windows_file, output_file, client, limit=None, retries=2):
     windows = read_jsonl(windows_file)
+    if len({window["id"] for window in windows}) != len(windows):
+        raise ValueError("Duplicate prepared window IDs")
+    for window in windows:
+        if window.get("window_signature") != window_fingerprint(window):
+            raise ValueError(f"Prepared window changed or missing signature: {window['id']}")
+
     path = Path(output_file)
-    prior_rows = read_jsonl(path) if path.exists() else []
-    refiner_id = str(getattr(client, "model", type(client).__name__))
-    refiner_signature = digest(REFINE_PROMPT + refiner_id)
+    prior_rows = _read_refine_checkpoint(path)
     prior = {row["id"]: row for row in prior_rows}
     if len(prior) != len(prior_rows):
         raise ValueError("Duplicate checkpoint IDs")
+
+    window_map = {window["id"]: window for window in windows}
+    orphaned = prior.keys() - window_map.keys()
+    if orphaned:
+        raise ValueError(f"Orphaned refinement checkpoints: {sorted(orphaned)[:4]}; use a new workdir")
+
+    refiner_id = str(getattr(client, "model", type(client).__name__))
+    refiner_signature = digest(REFINE_PROMPT + refiner_id)
     for window in windows:
         existing = prior.get(window["id"])
         if existing and (existing.get("source_sha256") != window["source_sha256"]
                          or existing.get("speaker_id") != window["speaker_id"]):
             raise ValueError(f"Source changed since previous refinement: {window['id']}")
+        if existing and existing.get("window_signature") != window["window_signature"]:
+            raise ValueError(
+                f"Partition/content changed since previous refinement: {window['id']}; use a new workdir")
+        if existing and existing.get("raw_text") != window["raw_text"]:
+            raise ValueError(f"Refined raw_text was changed: {window['id']}")
         if existing and existing.get("refiner_signature") != refiner_signature:
-            raise ValueError(f"LLM model or prompt changed for {window['id']}; use a new workdir")
-    done = set(prior)
+            raise ValueError(
+                f"LLM model or prompt changed for {window['id']}; use a new workdir")
+
+    error_file = path.with_suffix(".errors.jsonl")
+    previous_errors = read_jsonl(error_file) if error_file.exists() else []
+    failures = {row["id"]: row for row in previous_errors
+                if row.get("id") in window_map and row.get("id") not in prior}
+    _save_failures(path, failures)
     path.parent.mkdir(parents=True, exist_ok=True)
-    complete, errors, skipped = 0, [], 0
+    complete, skipped, failed_this_run = 0, 0, []
     with path.open("a", encoding="utf-8", newline="\n") as dest:
         for window in windows:
-            if window["id"] in done:
+            id_ = window["id"]
+            if id_ in prior:
                 skipped += 1
                 continue
-            if limit is not None and complete + len(errors) >= limit:
+            if limit is not None and complete + len(failed_this_run) >= limit:
                 break
+
+            result = None
             for attempt in range(retries + 1):
                 try:
                     result = validate_refinement(client.refine(window))
                     break
-                except (ValueError, KeyError, urllib.error.URLError) as exc:
-                    if attempt == retries:
-                        errors.append({"id": window["id"], "error": str(exc)[:180]})
-                    else:
+                except (ValueError, KeyError, IndexError, TypeError,
+                        AttributeError, OSError) as exc:
+                    if attempt < retries:
                         time.sleep(0.4 * (2 ** attempt))
-            else:
+                        continue
+                    error_message = str(exc)
+                    secret = getattr(client, "key", "")
+                    if secret:
+                        error_message = error_message.replace(secret, "[REDACTED]")
+                    failures[id_] = {
+                        "id": id_, "source_sha256": window["source_sha256"],
+                        "window_signature": window["window_signature"],
+                        "refiner_signature": refiner_signature,
+                        "exception": type(exc).__name__,
+                        "error": error_message[:240],
+                    }
+                    _save_failures(path, failures)
+                    failed_this_run.append(id_)
+            if result is None:
                 continue
-            row = {k: v for k, v in window.items()
-                   if k not in ("context_before", "context_after")}
+
+            row = {key: value for key, value in window.items()
+                   if key not in ("context_before", "context_after")}
             row.update(result)
             row["review_status"] = "auto_candidate"
             row["refiner_model"] = refiner_id
@@ -293,11 +448,15 @@ def refine(windows_file, output_file, client, limit=None, retries=2):
             dest.write(json.dumps(row, ensure_ascii=False) + "\n")
             dest.flush()
             complete += 1
-    if errors:
-        write_jsonl(path.with_suffix(".errors.jsonl"), errors)
-    return {"total_windows": len(windows), "refined": complete,
-            "resume_skipped": skipped, "errors": len(errors),
-            "error_ids": [item["id"] for item in errors]}
+            failures.pop(id_, None)
+            _save_failures(path, failures)
+
+    return {
+        "total_windows": len(windows), "refined": complete,
+        "resume_skipped": skipped, "errors": len(failed_this_run),
+        "error_ids": failed_this_run,
+        "pending_failed_ids": sorted(failures),
+    }
 
 
 def build_catalog(refined_file, output_file):

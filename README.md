@@ -61,7 +61,7 @@ uv run python scripts/stream_rag.py refine --windows data/refined/nailv/windows.
 # 人工检查输出的 summary/details 和来源后，再去掉 --limit 处理剩余窗口。
 uv run python scripts/stream_rag.py refine --windows data/refined/nailv/windows.jsonl --output data/refined/nailv/refined_streams.jsonl
 
-uv run python scripts/stream_rag.py ingest --refined data/refined/nailv/refined_streams.jsonl --db data/lancedb/nailv
+uv run python scripts/stream_rag.py ingest --windows data/refined/nailv/windows.jsonl --refined data/refined/nailv/refined_streams.jsonl --db data/lancedb/nailv
 uv run python scripts/stream_rag.py catalog --refined data/refined/nailv/refined_streams.jsonl --output data/refined/nailv/stream_catalog.json
 uv run python scripts/stream_rag.py report --refined data/refined/nailv/refined_streams.jsonl --output data/refined/nailv/quality_report.json
 uv run python scripts/stream_rag.py search --db data/lancedb/nailv --query "对工作失误后感到难受的人如何回应？"
@@ -77,13 +77,16 @@ uv run python scripts/stream_rag.py search --db data/lancedb/nailv --query "工�
 
 ## 隔离与限制
 
-- **一个主播一套索引**。不要把团播、观众话语与多名主播直接混为一个说话人。
+- **一个主播一套索引**。不要把团播、观众话语与多名主播直接混为一个说话人。对于 JSONL，必须逐行提供可匹配 `--speaker-id` 的 `speaker_id` / `speaker`；未标注或标注为未知的发言会被跳过。
 - 输入和输出是文件；不会修改其他项目数据库或记忆。
 - 五分钟窗口遵循**真实字幕时间戳**；纯 TXT 缺少时间戳时以文字长度切片，不虚构直播时间。
 - 模型生成 `summary`、`details`、`topics`；`raw_text` 由程序截取，数据默认标注 `auto_candidate`。
+- `refine` 对每个窗口记录原文与分块配置签名，拒绝把旧分块误用为新的结果；错误窗口实时记录到 `refined_streams.errors.jsonl`，之后重新执行同一命令即可恢复。
+- `ingest --windows` 和完整 `pipeline` 会核对所有片段是否齐全且版本一致；索引通过临时目录构建，成功后才替换旧库。
+- `eval` 支持 Reranker，并分别报告 Recall@K、HitRate@K 和 MRR；评测时重排出错直接失败，不把 RRF 回退伪装成重排评测。
 - `stream_catalog.json` 只供语料来源追溯，不是聊天角色的日程。
 - `--embed-mode hash-test --allow-test-embeddings` 为**测试替身**，不可作为生产向量使用。
 - 公开的直播字幕、音频、整理稿仍需核对各自许可。
-- 尚未用真实约 10 万字直播文本完成完整 LLM + 真正 Embedding 的检索质量评测。
+- 已通过 27 项本地回归测试，包括断点污染复现修复、LLM 故障恢复和索引发布回滚；尚未用真实约 10 万字直播文本完成完整 LLM + 真正 Embedding 的检索质量评测。
 
 更完整的字段和操作说明见 [docs/STREAM_RAG_EIDOLON_BASELINE.md](docs/STREAM_RAG_EIDOLON_BASELINE.md)。
