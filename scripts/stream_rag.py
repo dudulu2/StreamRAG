@@ -21,6 +21,7 @@ from streamrag.corpus import (
 from streamrag.retrieval import (
     EmbeddingClient, CohereReranker, build_index, search, evaluate,
 )
+from streamrag.manual import export_batches, import_responses, validate_import
 
 
 def embedding_client(args):
@@ -98,6 +99,24 @@ def main(argv=None):
     p.add_argument("--output", type=Path, required=True)
     add_llm_flags(p)
 
+    p = sub.add_parser("export-batches", help="Make offline prompt files for Gemini/Astra")
+    p.add_argument("--windows", type=Path, required=True)
+    p.add_argument("--outdir", type=Path, required=True)
+    p.add_argument("--max-windows", type=int, default=2)
+    p.add_argument("--max-chars", type=int, default=8000)
+
+    p = sub.add_parser("import-refined", help="Import signed model JSON without an LLM API")
+    p.add_argument("--windows", type=Path, required=True)
+    p.add_argument("--manifest", type=Path, required=True)
+    p.add_argument("--responses", type=Path, required=True)
+    p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--model", required=True, help="e.g. gemini4-web or astra-local")
+
+    p = sub.add_parser("validate", help="Validate refined data, signatures and coverage")
+    p.add_argument("--windows", type=Path, required=True)
+    p.add_argument("--refined", type=Path, required=True)
+    p.add_argument("--strict", action="store_true", help="Fail if any window is missing")
+
     p = sub.add_parser("ingest", help="Embed and build a local LanceDB index")
     p.add_argument("--refined", type=Path, required=True)
     p.add_argument("--db", type=Path, required=True)
@@ -150,6 +169,14 @@ def main(argv=None):
     elif args.command == "refine":
         result = refine(args.windows, args.output, llm_client(args),
                         limit=args.limit, retries=args.retries)
+    elif args.command == "export-batches":
+        result = export_batches(args.windows, args.outdir,
+                                max_windows=args.max_windows, max_chars=args.max_chars)
+    elif args.command == "import-refined":
+        result = import_responses(args.windows, args.manifest, args.responses,
+                                  args.output, args.model)
+    elif args.command == "validate":
+        result = validate_import(args.windows, args.refined, strict=args.strict)
     elif args.command == "ingest":
         if args.windows:
             check_refined_complete(args.windows, args.refined)

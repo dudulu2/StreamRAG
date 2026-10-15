@@ -223,9 +223,15 @@ REFINE_PROMPT = """你是直播档案整理器，不是角色扮演者。
 纯礼物播报、纯歌词、无意义重复、纯日程通知可设 keep=false。
 返回严格 JSON 对象，键名为：
 keep(boolean), topic(string), summary(string), details(string),
-topics(string[]), scene_summaries(string[]), activity(string), risk_flags(string[])。
-details 保留故事和讨论的展开、观点、转折、回应方式，但不要改写出不存在的剧情。
-summary 简短，details 具体。不要在输出中重新生成原始逐字稿。"""
+topics(string[]), scene_summaries(string[]), activity(string), risk_flags(string[]),
+trigger_context(string|null), dialogue_flow(string[]), interaction_notes(string),
+verbatim_excerpts(string[])。
+details 应以清晰自然的叙述保留故事、具体例子、观点、转折与结论，不要只写分类词。
+dialogue_flow 用完整句子叙述话语如何推进，不能假造不存在的问答。
+verbatim_excerpts 精选1到4段原文中的逐字片段，禁止改写、删字或补字。
+trigger_context 只在明确听到提问或原因时填写，否则为 null。
+分类标签只为辅助检索，不能替代 details、dialogue_flow 和原始讲话。
+summary 简短，details 具体。不要在输出中重新生成整段原始逐字稿。"""
 
 
 def validate_refinement(value):
@@ -244,6 +250,24 @@ def validate_refinement(value):
         if not isinstance(values, list) or any(not isinstance(v, str) for v in values):
             raise ValueError(f"Bad LLM list {key}")
         result[key] = [v.strip()[:max_length] for v in values if v.strip()][:30]
+    trigger = value.get("trigger_context")
+    if trigger is not None and not isinstance(trigger, str):
+        raise ValueError("trigger_context must be a string or null")
+    result["trigger_context"] = trigger.strip()[:800] if trigger else None
+    notes = value.get("interaction_notes", "")
+    if not isinstance(notes, str):
+        raise ValueError("interaction_notes must be a string")
+    result["interaction_notes"] = notes.strip()[:1500]
+    flow = value.get("dialogue_flow", [])
+    if not isinstance(flow, list) or any(not isinstance(x, str) for x in flow):
+        raise ValueError("dialogue_flow must be a string array")
+    result["dialogue_flow"] = [x.strip()[:500] for x in flow if x.strip()][:20]
+    excerpts = value.get("verbatim_excerpts", [])
+    if not isinstance(excerpts, list) or any(not isinstance(x, str) for x in excerpts):
+        raise ValueError("verbatim_excerpts must be a string array")
+    if any(not x or len(x) > 500 for x in excerpts):
+        raise ValueError("verbatim_excerpts must be nonempty and <=500 characters")
+    result["verbatim_excerpts"] = excerpts[:8]
     if result["keep"] and not (result["summary"] and result["details"]):
         raise ValueError("Retained memories require summary and details")
     return result
@@ -416,6 +440,9 @@ def refine(windows_file, output_file, client, limit=None, retries=2):
             for attempt in range(retries + 1):
                 try:
                     result = validate_refinement(client.refine(window))
+                    for excerpt in result["verbatim_excerpts"]:
+                        if excerpt not in window["raw_text"]:
+                            raise ValueError("LLM quoted text is not exact source evidence")
                     break
                 except (ValueError, KeyError, IndexError, TypeError,
                         AttributeError, OSError) as exc:

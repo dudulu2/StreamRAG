@@ -104,9 +104,16 @@ def embedding_document(item):
     The source excerpt helps when LLM summaries omit a useful term, without
     allowing multi-minute transcripts to swamp the distillation or exceed API limits.
     """
-    parts = [item.get("topic", ""), item.get("summary", "")[:900],
-             item.get("details", "")[:2400], " ".join(item.get("topics", []))[:500],
-             item.get("raw_text", "")[:1000]]
+    parts = [
+        item.get("details", "")[:2400],
+        "\n".join(item.get("dialogue_flow", []))[:950],
+        item.get("interaction_notes", "")[:650],
+        "\n".join(item.get("verbatim_excerpts", []))[:850],
+        item.get("summary", "")[:750],
+        item.get("raw_text", "")[:1350],
+        item.get("topic", "")[:120],
+        " ".join(item.get("topics", []))[:120],
+    ]
     return "\n".join(str(part) for part in parts if part).strip()[:6500]
 
 
@@ -176,8 +183,11 @@ def build_index(refined_path, index_dir, embeddings, batch_size=16):
         for item, vector in zip(rows, vectors):
             full_content = "\n".join([
                 item.get("topic", ""), item.get("summary", ""),
-                item.get("details", ""), " ".join(item.get("topics", [])),
-                item["raw_text"]
+                item.get("details", ""),
+                "\n".join(item.get("dialogue_flow", [])),
+                item.get("interaction_notes", ""),
+                "\n".join(item.get("verbatim_excerpts", [])),
+                " ".join(item.get("topics", [])), item["raw_text"]
             ])
             records.append({
                 "id": item["id"], "source_id": item["source_id"],
@@ -187,6 +197,11 @@ def build_index(refined_path, index_dir, embeddings, batch_size=16):
                 "end_ms": -1 if item.get("end_ms") is None else int(item["end_ms"]),
                 "topic": item.get("topic", ""), "summary": item.get("summary", ""),
                 "details": item.get("details", ""), "raw_text": item["raw_text"],
+                "trigger_context": item.get("trigger_context") or "",
+                "interaction_notes": item.get("interaction_notes", ""),
+                "dialogue_flow_json": json.dumps(item.get("dialogue_flow", []), ensure_ascii=False),
+                "verbatim_excerpts_json": json.dumps(item.get("verbatim_excerpts", []), ensure_ascii=False),
+                "scene_summaries_json": json.dumps(item.get("scene_summaries", []), ensure_ascii=False),
                 "topics_json": json.dumps(item.get("topics", []), ensure_ascii=False),
                 "source_meta_json": json.dumps(
                     item.get("source_meta", {}), ensure_ascii=False),
@@ -205,7 +220,8 @@ def build_index(refined_path, index_dir, embeddings, batch_size=16):
             "embedding_mode": embeddings.mode, "embedding_model": embeddings.model,
             "vector_dimensions": len(vectors[0]),
             "source_ids": sorted({r["source_id"] for r in rows}),
-            "embedding_text_version": 2,
+            "embedding_text_version": 3,
+            "narrative_evidence_fields": True,
             "refined_sha256": hashlib.sha256(Path(refined_path).read_bytes()).hexdigest(),
             "note": ("Test embedding mode is not suitable for real RAG."
                      if embeddings.mode == "hash-test" else ""),
@@ -245,7 +261,15 @@ class CohereReranker:
     def rerank(self, query, merged, top_k):
         if not merged:
             return []
-        documents = [x["item"]["summary"] + "\n" + x["item"]["details"] for x in merged]
+        documents = [embedding_document({
+            "summary": x["item"].get("summary", ""),
+            "details": x["item"].get("details", ""),
+            "dialogue_flow": json.loads(x["item"].get("dialogue_flow_json", "[]")),
+            "interaction_notes": x["item"].get("interaction_notes", ""),
+            "verbatim_excerpts": json.loads(x["item"].get("verbatim_excerpts_json", "[]")),
+            "raw_text": x["item"].get("raw_text", ""),
+            "topic": x["item"].get("topic", ""),
+        }) for x in merged]
         req = urllib.request.Request(
             self.url, method="POST",
             data=json.dumps({"model": self.model, "query": query,
@@ -262,6 +286,30 @@ class CohereReranker:
             result.append({"item": merged[i]["item"],
                            "score": float(row["relevance_score"])})
         return result
+
+
+def render_reference(row, max_raw_chars=2400):
+    """Produce substantive external conversational evidence, not tag-only memories."""
+    flow = row.get("dialogue_flow", [])
+    quotes = row.get("verbatim_excerpts", [])
+    sections = [
+        "【外部直播对话参考：不是角色本人经历或长期记忆】",
+        "话题：" + row.get("topic", ""),
+        "具体内容：" + row.get("details", ""),
+    ]
+    if row.get("trigger_context"):
+        sections.append("明确触发背景：" + row["trigger_context"])
+    if flow:
+        sections.append("话语如何展开：\n" + "\n".join("- " + s for s in flow))
+    if row.get("interaction_notes"):
+        sections.append("真实互动方式：" + row["interaction_notes"])
+    if quotes:
+        sections.append("来自原文的逐字摘录：\n" + "\n".join("- " + q for q in quotes))
+    original = row.get("raw_text", "")
+    if original:
+        suffix = "…[剩余原文请读取 raw_text 字段]" if len(original) > max_raw_chars else ""
+        sections.append("原始直播文字：\n" + original[:max_raw_chars] + suffix)
+    return "\n\n".join(sections)
 
 
 def open_index(index_dir):
@@ -314,18 +362,28 @@ def search(index_dir, query, embeddings=None, *, top_k=3, candidates=15,
     output = []
     for item in merged[:top_k]:
         row = item["item"]
-        output.append({
+        dialogue_flow = json.loads(row.get("dialogue_flow_json", "[]"))
+        excerpts = json.loads(row.get("verbatim_excerpts_json", "[]"))
+        result = {
             "id": row["id"], "source_id": row["source_id"],
             "speaker_id": row["speaker_id"], "topic": row["topic"],
             "summary": row["summary"], "details": row["details"],
             "raw_text": row["raw_text"], "source_file": row["source_file"],
+            "trigger_context": row.get("trigger_context") or None,
+            "interaction_notes": row.get("interaction_notes", ""),
+            "dialogue_flow": dialogue_flow,
+            "verbatim_excerpts": excerpts,
+            "scene_summaries": json.loads(row.get("scene_summaries_json", "[]")),
+            "topics": json.loads(row.get("topics_json", "[]")),
             "source_sha256": row["source_sha256"],
             "source_meta": json.loads(row["source_meta_json"]),
             "start_ms": None if row["start_ms"] < 0 else row["start_ms"],
             "end_ms": None if row["end_ms"] < 0 else row["end_ms"],
             "score": item["score"],
             "reranker_status": reranker_status,
-        })
+        }
+        result["reference_text"] = render_reference(result)
+        output.append(result)
     return output
 
 

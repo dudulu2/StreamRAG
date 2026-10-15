@@ -1,6 +1,6 @@
 # StreamRAG：独立项目的 Eidolon 风格基线
 
-> 状态：已实现离线流水线与基础检索接口；尚未用真实 10 万字语料或付费 LLM 完整跑通。
+> 状态：已实现离线流水线、Gemini/Astra 手动文件交换、LanceDB 混合检索和基本测试；尚未用真实 10 万字语料完成端到端质量验证。
 >
 > 不是原 Eidolon 的源码或备份。实现参考其公开架构说明：
 > https://laplace.live/eidolon （文档截至 2026-10-15 可访问，原 GitHub 仓库不公开）。
@@ -27,8 +27,9 @@
 
 - scripts/stream_rag.py：CLI，包含 prepare / refine / ingest / catalog / report / search / eval / pipeline
 - src/streamrag/corpus.py：TXT/SRT/JSONL → 真实来源窗口 → LLM 二次精炼 JSONL
+- src/streamrag/manual.py：无 LLM API 的 Gemini 网页/Astra 本地批次导入导出、签名及原话校验
 - src/streamrag/retrieval.py：本地 LanceDB 和混合检索
-- tests/test_stream_rag_pipeline.py：回归测试
+- tests/test_stream_rag_pipeline.py 和 tests/test_manual_workflow.py：回归测试
 
 ## 环境
 
@@ -36,9 +37,13 @@
 
     uv sync --python 3.12
     uv run python scripts/stream_rag.py --help
-    uv run python -m unittest discover -s tests -p test_stream_rag_pipeline.py -v
+    uv run python -m unittest discover -s tests -p "test_*.py" -v
 
 `uv sync` 只安装到 **StreamRAG 自己的 .venv**；不修改 AI-Wife、系统 Anaconda、已有 ASR/TTS 环境。下面各处的 `python` 命令前面统一加 `uv run`（或者先激活本项目的 .venv）。
+
+## 无 LLM API 的 Gemini/Astra 操作方式
+
+建议直接使用 [ASTRA_GEMINI_MANUAL_WORKFLOW.md](ASTRA_GEMINI_MANUAL_WORKFLOW.md)，它说明如何把带签名的窗口导出为 Gemini 网页可上传的 .md 文件、接收下载的 JSON、让 Astra 在本地生成同类文件、校验后再进入 LanceDB。原始逐字稿不能由模型重写；具体叙述、话语推进和真实引语是正式 RAG 数据，分类标签只用于辅助检索。下面仍保留传统 LLM API 自动精炼的操作说明。
 
 ## 输入约定
 
@@ -137,5 +142,5 @@ pipeline 会执行 prepare → refine → ingest → catalog → report。首次
 2. 需要授权或明确许可才能对第三方录播字幕进行相应使用；公开下载不等于拥有训练/再分发许可。
 3. **目前不接正式 M0/M5 运行时**。未来接入时应使用仅检索证据、禁止写入 Persona/用户事实/私有记忆的受控接口。
 4. 官方 Eidolon 有专用的 Retriever Gate、Pipecat 集成、persona facts、Mem0，我们的第一阶段只做 Stream Archive。
-5. 同一个 RAG 索引的 embedding 模型和维度必须保持固定，更换模型需重新建库。
+5. 同一个 RAG 索引的 embedding 模型和维度必须保持固定，更换模型需重新建库。网页无 LLM API 不等于自动有本地 Embedding：可以连接本机兼容 /v1/embeddings 的模型服务，hash-test 不能用于生产。
 6. 初次验收至少需要一次有真实 LLM、真实向量的端到端构建，以及独立的人工检索测试集。
