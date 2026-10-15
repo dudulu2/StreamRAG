@@ -1,0 +1,28 @@
+# Python cache and isolated dependencies
+.venv/
+.stream-rag-venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Credentials - never commit secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# User-supplied transcripts and generated RAG assets
+data/transcripts/**
+data/refined/**
+data/lancedb/**
+!data/transcripts/.gitkeep
+!data/refined/.gitkeep
+!data/lancedb/.gitkeep
+
+# OS and editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

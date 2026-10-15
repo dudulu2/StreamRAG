@@ -1,0 +1,268 @@
+"""Local LanceDB stream archive with Chinese BM25 + vector RRF + optional rerank.
+
+The DB holds third-party stream evidence, never the app's user memories.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import re
+import urllib.request
+from pathlib import Path
+
+from .corpus import read_jsonl
+
+STOPWORDS = {"了", "的", "是", "呀", "啊", "呢", "吧", "吗", "哦", "和",
+             "就", "有", "在", "而且", "这个", "那个", "然后", "就是", "一个"}
+
+
+def _jieba():
+    try:
+        import jieba
+        return jieba
+    except ImportError as exc:
+        raise RuntimeError("Install dependency: uv pip install jieba") from exc
+
+
+def terms(text):
+    tokenizer = _jieba()
+    words = tokenizer.lcut(str(text).lower())
+    return [word for word in words
+            if word not in STOPWORDS and re.fullmatch(r"[\u3400-\u9fffA-Za-z0-9_]+", word)
+            and (len(word) > 1 or word.isascii())]
+
+
+def _lancedb():
+    try:
+        import lancedb
+        return lancedb
+    except ImportError as exc:
+        raise RuntimeError("Install dependency: uv pip install lancedb") from exc
+
+
+class EmbeddingClient:
+    """OpenAI-compatible embeddings; hash-test is explicit and is NOT a real embedder."""
+    def __init__(self, mode, model, base_url="", api_key="", timeout=40):
+        if mode not in ("api", "hash-test"):
+            raise ValueError("Embedding mode must be api or hash-test")
+        if mode == "api":
+            if not model or not api_key:
+                raise ValueError("Embedding API key/model required")
+            if not base_url.startswith(("https://", "http://127.0.0.1:", "http://localhost:")):
+                raise ValueError("Embedding endpoint must be HTTPS or localhost")
+        self.mode, self.model = mode, model if mode == "api" else "HASH-TEST-NOT-PRODUCTION"
+        self.base_url = base_url.rstrip("/")
+        self.api_key, self.timeout = api_key, timeout
+
+    def embed(self, texts):
+        is_batch = isinstance(texts, list)
+        sources = texts if is_batch else [texts]
+        if not sources or any(not isinstance(s, str) or not s.strip() for s in sources):
+            raise ValueError("Empty embedding input")
+        if self.mode == "hash-test":
+            output = []
+            for s in sources:
+                vec = [0.0] * 128
+                for token in terms(s):
+                    code = int(hashlib.sha256(token.encode("utf-8")).hexdigest()[:8], 16)
+                    vec[code % 128] += 1.0 if code & 1 else -1.0
+                norm = math.sqrt(sum(x*x for x in vec)) or 1.0
+                output.append([x/norm for x in vec])
+            return output if is_batch else output[0]
+        path = self.base_url if self.base_url.endswith("/embeddings") else self.base_url + "/embeddings"
+        req = urllib.request.Request(
+            path,
+            data=json.dumps({"model": self.model, "input": sources,
+                             "encoding_format": "float"}).encode("utf-8"),
+            headers={"Content-Type": "application/json",
+                     "Authorization": "Bearer " + self.api_key},
+            method="POST")
+        with urllib.request.urlopen(req, timeout=self.timeout) as response:
+            data = json.load(response)
+        returned = sorted(data["data"], key=lambda x: int(x.get("index", 0)))
+        if len(returned) != len(sources):
+            raise ValueError("Embedding response count mismatch")
+        vectors = [row["embedding"] for row in returned]
+        if any(not isinstance(v, list) or not v or
+               any(not isinstance(x, (float, int)) or not math.isfinite(x) for x in v)
+               for v in vectors):
+            raise ValueError("Embedding response contains invalid numbers")
+        if len({len(v) for v in vectors}) != 1:
+            raise ValueError("Embedding dimension mismatch")
+        return vectors if is_batch else vectors[0]
+
+
+def build_index(refined_path, index_dir, embeddings, batch_size=16):
+    rows = [row for row in read_jsonl(refined_path) if row.get("keep", False)]
+    if not rows:
+        raise ValueError("No retained stream chunks; refine input first")
+    ids = [str(row["id"]) for row in rows]
+    if len(set(ids)) != len(ids):
+        raise ValueError("Duplicate chunk IDs: clean or rebuild the refined JSONL")
+    speakers = {row["speaker_id"] for row in rows}
+    if len(speakers) != 1:
+        raise ValueError("Keep one broadcaster per index; never mix speaker identities")
+    if batch_size < 1 or batch_size > 64:
+        raise ValueError("Embedding batch must have 1-64 items")
+    vectors = []
+    for offset in range(0, len(rows), batch_size):
+        batch = rows[offset:offset+batch_size]
+        vectors.extend(embeddings.embed([
+            "\n".join([r.get("topic", ""), r.get("summary", ""),
+                       r.get("details", ""), " ".join(r.get("topics", []))])
+            for r in batch]))
+    if len({len(v) for v in vectors}) != 1:
+        raise ValueError("Inconsistent vector dimensions")
+    lancedb = _lancedb()
+    dest = Path(index_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+    records = []
+    for item, vector in zip(rows, vectors):
+        full_content = "\n".join([item.get("topic", ""), item.get("summary", ""),
+                                  item.get("details", ""), item["raw_text"]])
+        records.append({
+            "id": item["id"], "source_id": item["source_id"],
+            "speaker_id": item["speaker_id"], "source_file": item["source_file"],
+            "source_sha256": item["source_sha256"],
+            "start_ms": -1 if item.get("start_ms") is None else int(item["start_ms"]),
+            "end_ms": -1 if item.get("end_ms") is None else int(item["end_ms"]),
+            "topic": item.get("topic", ""), "summary": item.get("summary", ""),
+            "details": item.get("details", ""), "raw_text": item["raw_text"],
+            "topics_json": json.dumps(item.get("topics", []), ensure_ascii=False),
+            "source_meta_json": json.dumps(item.get("source_meta", {}), ensure_ascii=False),
+            "search_terms": " ".join(terms(full_content)),
+            "vector": list(map(float, vector)),
+        })
+    db = lancedb.connect(str(dest))
+    table = db.create_table("stream_chunks", data=records, mode="overwrite")
+    # Text was segmented in advance with jieba; index whitespace-delimited terms.
+    from lancedb.index import FTS
+    table.create_index("search_terms", config=FTS(
+        base_tokenizer="whitespace", stem=False, remove_stop_words=False), replace=True)
+    manifest = {
+        "schema_version": 1, "table": "stream_chunks",
+        "row_count": len(records), "speaker_id": next(iter(speakers)),
+        "embedding_mode": embeddings.mode, "embedding_model": embeddings.model,
+        "vector_dimensions": len(vectors[0]),
+        "source_ids": sorted({r["source_id"] for r in rows}),
+        "note": "Test embedding mode is not suitable for real RAG." if embeddings.mode == "hash-test" else "",
+    }
+    (dest / "stream_rag_manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return manifest
+
+
+def rrf_merge(vector_results, lexical_results, top_count=15, k=60):
+    """Fuse independent search rankings. Do not mix incomparable raw scores."""
+    candidates = {}
+    for group in (vector_results, lexical_results):
+        for rank, row in enumerate(group, 1):
+            key = row["id"]
+            current = candidates.setdefault(key, {"item": row, "score": 0.0})
+            current["score"] += 1.0 / (k + rank)
+    return sorted(candidates.values(), key=lambda v: (-v["score"], v["item"]["id"]))[:top_count]
+
+
+class CohereReranker:
+    """Optional Cohere-compatible /rerank endpoint, never a required dependency."""
+    def __init__(self, url, model, key, timeout=30):
+        if not key or not url:
+            raise ValueError("Rerank URL/key must be set together")
+        if not url.startswith(("https://", "http://127.0.0.1:", "http://localhost:")):
+            raise ValueError("Rerank endpoint must use HTTPS or localhost")
+        self.url, self.model, self.key, self.timeout = url, model, key, timeout
+
+    def rerank(self, query, merged, top_k):
+        if not merged:
+            return []
+        documents = [x["item"]["summary"] + "\n" + x["item"]["details"] for x in merged]
+        req = urllib.request.Request(
+            self.url, method="POST",
+            data=json.dumps({"model": self.model, "query": query,
+                             "documents": documents, "top_n": top_k}).encode("utf-8"),
+            headers={"Content-Type": "application/json",
+                     "Authorization": "Bearer " + self.key})
+        with urllib.request.urlopen(req, timeout=self.timeout) as response:
+            data = json.load(response)
+        result = []
+        for row in data["results"]:
+            i = int(row["index"])
+            if i < 0 or i >= len(merged):
+                raise ValueError("Out-of-range rerank index")
+            result.append({"item": merged[i]["item"],
+                           "score": float(row["relevance_score"])})
+        return result
+
+
+def open_index(index_dir):
+    dest = Path(index_dir)
+    manifest = json.loads((dest / "stream_rag_manifest.json").read_text(encoding="utf-8"))
+    table = _lancedb().connect(str(dest)).open_table(manifest["table"])
+    return table, manifest
+
+
+def search(index_dir, query, embeddings=None, *, top_k=3, candidates=15,
+           reranker=None, lexical_only=False, verbose_errors=False):
+    table, manifest = open_index(index_dir)
+    if not query.strip():
+        return []
+    candidates = max(top_k, candidates)
+    vector_rows = []
+    if not lexical_only:
+        if embeddings is None:
+            raise ValueError("Embeddings are required for vector retrieval")
+        if embeddings.model != manifest["embedding_model"]:
+            raise ValueError("Embedding model mismatch; rebuild or use original model")
+        if embeddings.mode != manifest["embedding_mode"]:
+            raise ValueError("Embedding mode mismatch")
+        vector_rows = table.search(embeddings.embed(query), query_type="vector").limit(candidates).to_list()
+    lexical_rows = []
+    query_tokens = terms(query)
+    if query_tokens:
+        lexical_rows = table.search(
+            " ".join(query_tokens), query_type="fts", fts_columns="search_terms"
+        ).limit(candidates).to_list()
+    merged = rrf_merge(vector_rows, lexical_rows, top_count=candidates)
+    if reranker:
+        try:
+            merged = reranker.rerank(query, merged, top_k)
+        except Exception as exc:
+            if verbose_errors:
+                print("Rerank failed; using RRF:", str(exc)[:180])
+    output = []
+    for item in merged[:top_k]:
+        row = item["item"]
+        output.append({
+            "id": row["id"], "source_id": row["source_id"],
+            "speaker_id": row["speaker_id"], "topic": row["topic"],
+            "summary": row["summary"], "details": row["details"],
+            "raw_text": row["raw_text"], "source_file": row["source_file"],
+            "source_sha256": row["source_sha256"],
+            "source_meta": json.loads(row["source_meta_json"]),
+            "start_ms": None if row["start_ms"] < 0 else row["start_ms"],
+            "end_ms": None if row["end_ms"] < 0 else row["end_ms"],
+            "score": item["score"],
+        })
+    return output
+
+
+def evaluate(index_dir, gold_file, embeddings, *, top_k=3, candidates=15, lexical_only=False):
+    examples = read_jsonl(gold_file)
+    if not examples:
+        raise ValueError("Evaluation requires at least one example")
+    recalled, reciprocal, reports = 0, 0, []
+    for row in examples:
+        expected = set(row.get("relevant_ids", []))
+        if not expected:
+            raise ValueError("Each golden query needs relevant_ids")
+        results = search(index_dir, row["query"], embeddings, top_k=top_k,
+                         candidates=candidates, lexical_only=lexical_only)
+        ids = [x["id"] for x in results]
+        rank = next((i for i, name in enumerate(ids, 1) if name in expected), None)
+        recalled += int(rank is not None)
+        reciprocal += 1.0/rank if rank else 0.0
+        reports.append({"query": row["query"], "relevant_ids": sorted(expected),
+                        "retrieved_ids": ids, "first_relevant_rank": rank})
+    return {"queries": len(examples), "recall_at_k": recalled/len(examples),
+            "mrr_at_k": reciprocal/len(examples), "k": top_k, "results": reports}
