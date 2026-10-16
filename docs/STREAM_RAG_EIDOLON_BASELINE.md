@@ -80,7 +80,7 @@
 
 ### 2. LLM 精炼
 
-LLM 必须是 Chat Completions 兼容接口。下面用 SiliconFlow 举例，也可以用本地 OpenAI 兼容模型。
+LLM 必须是 Chat Completions 兼容接口。需显式指定自己的服务地址；没有默认云端服务。推荐使用网页批次工作流。
 
     $env:STREAM_RAG_LLM_API_KEY = "请通过自己的安全配置提供真实 Key"
     $env:STREAM_RAG_LLM_MODEL = "你实际启用的模型名称"
@@ -94,12 +94,12 @@ refine 支持断点续跑：逐窗口校验 **原文内容、邻近语境、窗�
 
 ### 3. 建立本地 LanceDB 索引
 
-    $env:STREAM_RAG_EMBED_API_KEY = "请通过自己的安全配置提供真实 Key"
+    # 默认直接使用本地 qwen/ 模型，无需 Embedding API Key
     python scripts\stream_rag.py ingest --windows data\refined\nailv\windows.jsonl --refined data\refined\nailv\refined_streams.jsonl --db data\lancedb\nailv
 
-默认使用配置好的 BAAI/bge-large-zh-v1.5（SiliconFlow OpenAI 兼容 embedding）；也可以指定 --embed-url、--embed-model、--embed-key-env 连接自托管 embedding 服务。向量文本由 summary/details/topics 加上**长度受限的原文摘录**构成。`ingest --windows` 会拒绝不完整或过时的精炼文件。新 LanceDB 在临时目录完成 FTS 建索引后才发布，异常时保留旧数据库；如果新库已发布但旧目录因 Windows 文件占用无法清理，只警告并保留备份目录，不会误报发布失败。
+默认直接使用本项目 `qwen/` 的 Qwen3-Embedding-0.6B。首次执行 `uv run python scripts/stream_rag.py embedding-download` 下载模型；可通过 `--embed-model-path` 指定其他本地目录。查询使用任务指令、文档不使用指令，统一输出 1024 维归一化向量并按 cosine 检索。`ingest --windows` 会拒绝不完整或过时的精炼文件。新 LanceDB 在临时目录完成 FTS 建索引后才发布，异常时保留旧数据库；如果新库已发布但旧目录因 Windows 文件占用无法清理，只警告并保留备份目录，不会误报发布失败。
 
-这**不是外部 RAG API**：文档和 LanceDB 索引都在自己本机。要完全脱离外部服务，请将 embedding、LLM 和 reranker 服务全部换成你控制的本地端点。
+这**不是外部 RAG API**：文档和 LanceDB 索引都在自己本机。Embedding 默认完全本地运行。网页精炼不需要 LLM API；可选 API 精炼或重排只有显式配置才会联网。
 
 ### 4. 聚合目录和查看质量
 
@@ -130,7 +130,7 @@ gold.jsonl 每行至少包含：
 
     python scripts\stream_rag.py pipeline --input data\transcripts\nailv --speaker-id nailv --workdir data\refined\nailv
 
-pipeline 会执行 prepare → refine → ingest → catalog → report。首次使用需正确配置 LLM 和 embedding Key/模型。发生部分精炼失败或设置 --limit 后，流水线会通过窗口内容签名和完整 ID 集校验，阻止构建不完整或新旧混合的索引。
+pipeline 会执行 prepare → refine → ingest → catalog → report。此可选 API 流程需显式配置 LLM；Embedding 使用本地模型。发生部分精炼失败或设置 --limit 后，流水线会通过窗口内容签名和完整 ID 集校验，阻止构建不完整或新旧混合的索引。
 
 ## 调试说明
 
@@ -142,5 +142,5 @@ pipeline 会执行 prepare → refine → ingest → catalog → report。首次
 2. 需要授权或明确许可才能对第三方录播字幕进行相应使用；公开下载不等于拥有训练/再分发许可。
 3. **目前不接正式 M0/M5 运行时**。未来接入时应使用仅检索证据、禁止写入 Persona/用户事实/私有记忆的受控接口。
 4. 官方 Eidolon 有专用的 Retriever Gate、Pipecat 集成、persona facts、Mem0，我们的第一阶段只做 Stream Archive。
-5. 同一个 RAG 索引的 embedding 模型和维度必须保持固定，更换模型需重新建库。网页无 LLM API 不等于自动有本地 Embedding：可以连接本机兼容 /v1/embeddings 的模型服务，hash-test 不能用于生产。
+5. 同一个 RAG 索引的 embedding 模型和维度必须保持固定，更换模型需重新建库。网页无 LLM API 不等于自动有本地 Embedding：默认从本机 qwen/ 直接加载模型，hash-test 不能用于生产。
 6. 初次验收至少需要一次有真实 LLM、真实向量的端到端构建，以及独立的人工检索测试集。

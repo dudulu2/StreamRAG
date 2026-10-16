@@ -60,6 +60,9 @@ class EmbeddingClient:
         self.base_url = base_url.rstrip("/")
         self.api_key, self.timeout = api_key, timeout
 
+    def embed_query(self, text):
+        return self.embed(text)
+
     def embed(self, texts):
         is_batch = isinstance(texts, list)
         sources = texts if is_batch else [texts]
@@ -221,6 +224,7 @@ def build_index(refined_path, index_dir, embeddings, batch_size=16):
             "vector_dimensions": len(vectors[0]),
             "source_ids": sorted({r["source_id"] for r in rows}),
             "embedding_text_version": 3,
+            "embedding_contract": getattr(embeddings, "contract", None),
             "narrative_evidence_fields": True,
             "refined_sha256": hashlib.sha256(Path(refined_path).read_bytes()).hexdigest(),
             "note": ("Test embedding mode is not suitable for real RAG."
@@ -334,7 +338,16 @@ def search(index_dir, query, embeddings=None, *, top_k=3, candidates=15,
             raise ValueError("Embedding model mismatch; rebuild or use original model")
         if embeddings.mode != manifest["embedding_mode"]:
             raise ValueError("Embedding mode mismatch")
-        vector_rows = table.search(embeddings.embed(query), query_type="vector").limit(candidates).to_list()
+        contract = getattr(embeddings, "contract", None)
+        if contract != manifest.get("embedding_contract"):
+            raise ValueError("Embedding contract mismatch; rebuild the index")
+        query_vector = embeddings.embed_query(query)
+        if len(query_vector) != manifest["vector_dimensions"]:
+            raise ValueError("Query vector dimension mismatch; rebuild the index")
+        request = table.search(query_vector, query_type="vector")
+        if contract:
+            request = request.distance_type(contract["metric"])
+        vector_rows = request.limit(candidates).to_list()
     lexical_rows = []
     query_tokens = terms(query)
     if query_tokens:

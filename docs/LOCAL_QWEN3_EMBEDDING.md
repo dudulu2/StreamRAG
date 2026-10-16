@@ -1,5 +1,7 @@
 # Qwen3-Embedding-0.6B local deployment (Windows)
 
+> **说明：本页是早期可选 Ollama 部署方法，不是当前默认路径。** 当前默认方案是直接加载仓库根目录 `qwen/` 下的本地 Qwen3-Embedding-0.6B 权重，不依赖 Ollama 或 SiliconFlow。请以 [README 本地 Embedding 说明](../README.md#本地-qwen3-embedding-06b) 为准。模型文件不上传 GitHub。
+
 **No Embedding subscription or actual API key is needed.** Install Ollama and pull its local qwen3-embedding:0.6b model once (approximately 639 MB).
 
 ## Setup
