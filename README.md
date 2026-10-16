@@ -117,6 +117,18 @@ uv run python scripts/stream_rag.py search --db data/lancedb/nailv --query "对�
 uv run python scripts/stream_rag.py search --db data/lancedb/nailv --query "工作失误" --lexical-only
 ```
 
+## 外部字幕来源索引（不包含第三方原文）
+
+[corpus_sources/README.md](corpus_sources/README.md) 提供明前奶绿、七海、阿梓的 **37 份第三方现成字幕来源**，含逐份官方/原站下载地址、SHA-256 和待复核质量标签：[JSON 清单](corpus_sources/zimu_20261016.json)。
+
+可在有使用权限的本地环境运行：
+
+```powershell
+python scripts/fetch_zimu_transcripts.py --speaker nailv
+python scripts/fetch_zimu_transcripts.py --verify-only
+```
+
+字幕源文件保留在被 Git 忽略的 `data/transcripts/`；未经授权的第三方完整字幕不提交到公开仓库。**仅给 Gemini 一个 GitHub 地址不足以证明它已经读到字幕原文**；需核验能否实际打开每条原站 `source_url`，否则另行提供有权处理的原稿。主播语料与可更换的角色卡相互独立。
 ## 隔离与限制
 
 - **一个主播一套索引**。不要把团播、观众话语与多名主播直接混为一个说话人。对于 JSONL，必须逐行提供可匹配 `--speaker-id` 的 `speaker_id` / `speaker`；未标注或标注为未知的发言会被跳过。
