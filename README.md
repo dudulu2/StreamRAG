@@ -144,3 +144,35 @@ python scripts/fetch_zimu_transcripts.py --verify-only
 - 具备本地回归测试，包括断点污染复现修复、LLM 故障恢复和索引发布回滚；尚未用真实约 10 万字直播文本完成完整 LLM + 真正 Embedding 的检索质量评测。
 
 更完整的字段和操作说明见 [docs/STREAM_RAG_EIDOLON_BASELINE.md](docs/STREAM_RAG_EIDOLON_BASELINE.md)。
+
+
+## 归属修订与三层检索
+
+奶绿第二阶段修订入口：`scripts/three_layer_rag.py`。原始 Gemini 输出保持不变。
+
+- 修补清单：`data/attribution/nailv_20261016/semantic_patch.json`，逐窗口语义判断，绑定输入哈希。
+- 当前修订：`data/attribution/nailv_20261016/revision_02/`。`records.jsonl` 是检索数据；`author_spans.jsonl` 保存作者边界；`boundary_changes.jsonl` 可对照改动；`v1_audit.jsonl` 保留 160 条旧摘录复核。
+- 本地索引：`data/lancedb/nailv_three_layer_v1`，独立于旧的窗口级索引。
+
+```powershell
+.venv\Scripts\python.exe -B scripts\three_layer_rag.py validate
+.venv\Scripts\python.exe -B scripts\three_layer_rag.py query --scope facts --query "奶绿喜欢什么香味？"
+.venv\Scripts\python.exe -B scripts\three_layer_rag.py query --scope style --query "怎样回应受伤求安慰的观众？"
+.venv\Scripts\python.exe -B scripts\three_layer_rag.py query --scope attribution --query "谁在达卡打灰三年？"
+```
+
+`context` 返回原文与观众情境，`facts` 返回主播自述、观点等，`style` 返回原句片段及互动。`attribution` 对照主播记录与观众记录。过滤先于召回数量限制，使用本地 Qwen + 中文 FTS + RRF。`--epistemic self_report` 可只查自述；`--min-similarity` 可设置向量门槛，默认不猜阈值。
+
+原句放在 `evidence[].text`，分段保留，不拼成连续引语。`trigger_evidence` 是观众触发原句；缺失时用 `trigger_kind=context_inferred`。`text`、`model_analysis` 是分析文字。`author` 表示文字归属；`spoken_by=unverified`、`speaker_verified=false` 表示未做音频核验。上下文通过 `window_id` 另查，不混进事实或表达结果。检索返回候选证据，不直接生成断言。
+
+需要重新生成时，指定新的修订和索引目录：
+
+```powershell
+.venv\Scripts\python.exe -B scripts\three_layer_rag.py repair --revision data/attribution/nailv_20261016/revision_new
+.venv\Scripts\python.exe -B scripts\three_layer_rag.py index --revision data/attribution/nailv_20261016/revision_new --index data/lancedb/nailv_three_layer_new
+.venv\Scripts\python.exe -B scripts\evaluate_three_layer.py --output data/attribution/nailv_20261016/retrieval_evaluation_after.json
+```
+
+这批黄金问题用于开发回归；端到端回答质量和独立测试集仍需另测。ai-wife 接入时把这些记录作为外部直播素材，保留作者、证据及类型字段。
+
+当前验收：41 个窗口、450 条记录，189 处边界调整；756 段直接证据通过逐字与归属校验。10 个开发回归问题 Hit@5=100%，MRR@5=0.9333。单主播索引按配置去除查询中的主播全名再检索主题，不改变证据作者。无答案探针仍会返回相似候选，调用方须根据证据决定能否回答；本轮未测试回答生成。
