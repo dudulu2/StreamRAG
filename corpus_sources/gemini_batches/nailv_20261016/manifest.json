@@ -1,0 +1,238 @@
+{
+  "schema_version": 1,
+  "prompt_sha256": "a4664a8313f8d8c80b2aa3ece5c29c0ffdd2a0b73b883f8715ab285cb80b4389",
+  "windows_sha256": "e205e886f5b685fa08f319591f18fc19b0354f826739e423a915df6882d64dd8",
+  "windows_file": "windows.jsonl",
+  "window_count": 41,
+  "batches": [
+    {
+      "batch_id": "batch_0001_f66aa05f449c",
+      "window_ids": [
+        "nailv_20260920_emotion_part2__00001",
+        "nailv_20260920_emotion_part2__00002"
+      ],
+      "window_signatures": [
+        "c72f52aa1e2cda7adddba88a554bc68353d2e95bc7dfb66dc164738ccb633fff",
+        "2d6a4676e2abadc4080d2e0650e668014fe19725c194edb575999af63036b9b8"
+      ]
+    },
+    {
+      "batch_id": "batch_0002_f15d1475403a",
+      "window_ids": [
+        "nailv_20260920_emotion_part2__00003",
+        "nailv_20260920_emotion_part2__00004"
+      ],
+      "window_signatures": [
+        "3b86b39755fdde98ba75940198d53ac43dbd1d080fce87c6a451d7c02c7dc0fd",
+        "6b3eb48f962649f5b1219890d974fe3dc550794b2f2d51a3db95c10787376c47"
+      ]
+    },
+    {
+      "batch_id": "batch_0003_ce16c4b0d460",
+      "window_ids": [
+        "nailv_20260920_emotion_part2__00005",
+        "nailv_20260920_emotion_part2__00006"
+      ],
+      "window_signatures": [
+        "48142df8ccf93e493c1c48f4fb9c75196dcfdac249f47e5f6b7870fd8bae4497",
+        "f3b5d43ac8c1566cd0f4ea73699eeeb2a1306b5bc529a3dda7a7a5cdb5e11306"
+      ]
+    },
+    {
+      "batch_id": "batch_0004_e57f9f74dae3",
+      "window_ids": [
+        "nailv_20260920_emotion_part2__00007",
+        "nailv_20260920_emotion_part2__00008"
+      ],
+      "window_signatures": [
+        "9ccad9d02bbf3618e0a1b5de4e89f5b5cd824b2a57847ca8f475c462d7637de1",
+        "e87589ccdcf3ac3928350a0c44a6c06a92bbf251ec6111f1472ec768b16b88c3"
+      ]
+    },
+    {
+      "batch_id": "batch_0005_117b0d3ea935",
+      "window_ids": [
+        "nailv_20260920_emotion_part2__00009",
+        "nailv_20260920_emotion_part2__00010"
+      ],
+      "window_signatures": [
+        "bc0810334ff2e500838a57803e4aefdb9ada6b3131ed2f2a53550989734dcafa",
+        "fee87efd65f12f0c16d830c8b6ccff77742e0ea19fdff38bd3ec666a1ee0617c"
+      ]
+    },
+    {
+      "batch_id": "batch_0006_7a6f060a8890",
+      "window_ids": [
+        "nailv_20260920_emotion_part2__00011",
+        "nailv_20260920_emotion_part2__00012"
+      ],
+      "window_signatures": [
+        "6dd20cc02b848299b0f042f79b04578e45065e1b658c968467a1d2c1a8ce6d69",
+        "79480a3bfa8832fb3a99fadcce18df043ae64a8d224561d8469652bfd9c99916"
+      ]
+    },
+    {
+      "batch_id": "batch_0007_fe89a3700959",
+      "window_ids": [
+        "nailv_20260920_emotion_part2__00013",
+        "nailv_20260920_emotion_part2__00014"
+      ],
+      "window_signatures": [
+        "0dcb9ee3734b0585433b51c855efbb12c206aa024805e588b9d79588578a51fa",
+        "d6820c36c02e4bd7b31a83a0d8e4d47ae7db152d9c3ff6936541eb5026f85af6"
+      ]
+    },
+    {
+      "batch_id": "batch_0008_0259caf8efe7",
+      "window_ids": [
+        "nailv_20260920_emotion_part2__00015",
+        "nailv_20260920_emotion_part2__00016"
+      ],
+      "window_signatures": [
+        "543d3e2c21fa91b2f0961dccf4dbf30913102cc75ae1f333bf9cc79c2337fb9f",
+        "34a435941118b2ebd6ffb3e3609d28601cdf6d4a69819b50534da96f01a4c2c6"
+      ]
+    },
+    {
+      "batch_id": "batch_0009_128f31e12bab",
+      "window_ids": [
+        "nailv_20260920_emotion_part2__00017",
+        "nailv_20261003_memories_part2__00001"
+      ],
+      "window_signatures": [
+        "e84a6f72a3ed011ddf9ce28c66b2fd9a73f9f59f08ab266d535144430e17fe1b",
+        "7081e588a5db84b22a5e653e773521b11e80e8036dce39ce436d03c9dce026ec"
+      ]
+    },
+    {
+      "batch_id": "batch_0010_cdae1c505892",
+      "window_ids": [
+        "nailv_20261003_memories_part2__00002",
+        "nailv_20261003_memories_part2__00003"
+      ],
+      "window_signatures": [
+        "e4c1990a367500d3403a31f5f9b6a858ab9b775aa489144a572a10a726165eea",
+        "dc59c0428832588f80387150a47c4f9873da1d30b7733d07b75691f4c9ef2371"
+      ]
+    },
+    {
+      "batch_id": "batch_0011_653b6ae546cf",
+      "window_ids": [
+        "nailv_20261003_memories_part2__00004",
+        "nailv_20261003_memories_part2__00005"
+      ],
+      "window_signatures": [
+        "ff1c13ce4b2190efcb39ae8b2dba58badbd6774c86984b84746d0caa9ca7b50f",
+        "97aeca7fc0bd473f1e47363c1faa64c2338eb2e184176aa1f5db5d6261e04546"
+      ]
+    },
+    {
+      "batch_id": "batch_0012_e85fd0b05095",
+      "window_ids": [
+        "nailv_20261003_memories_part2__00006",
+        "nailv_20261003_memories_part2__00007"
+      ],
+      "window_signatures": [
+        "1154050c750c2a68e4a6dc465937dac27fcbd4dfd87555338985544cb48a9603",
+        "ccab06c098eb49413c1168bb0364a0f19fd2b90f931633c7ae5e05111b03cef8"
+      ]
+    },
+    {
+      "batch_id": "batch_0013_e178d3536103",
+      "window_ids": [
+        "nailv_20261003_memories_part2__00008",
+        "nailv_20261003_memories_part2__00009"
+      ],
+      "window_signatures": [
+        "f34a289e4ad474da37d002ea5c5aba4933811bce8bc0d24599e9608a17213b66",
+        "4c374ce4c6a4b1d65460e4f00290f16397e84030203b92c856b8a6730ded65d1"
+      ]
+    },
+    {
+      "batch_id": "batch_0014_14c164deca51",
+      "window_ids": [
+        "nailv_20261003_memories_part2__00010",
+        "nailv_20261003_memories_part2__00011"
+      ],
+      "window_signatures": [
+        "2a2356031be2254f062dcead491af5777845e1e1fce806a1790e9027b4c7d223",
+        "efe641d32ef2639b8389b75e3d4da19ab2a66a74fb8848f796e1f71f27e920f8"
+      ]
+    },
+    {
+      "batch_id": "batch_0015_a0193a3365bf",
+      "window_ids": [
+        "nailv_20261003_memories_part2__00012",
+        "nailv_20261003_memories_part2__00013"
+      ],
+      "window_signatures": [
+        "2436d25ac5f99ef724b87bf21c899881a8fd756f54f22c56b2652d3ea51a5ccb",
+        "ac84c9b17bb42313a2169b6fa32057eacc913c0313364c7319d8758fe63bb410"
+      ]
+    },
+    {
+      "batch_id": "batch_0016_67653d90db57",
+      "window_ids": [
+        "nailv_20261003_memories_part2__00014",
+        "nailv_20261003_memories_part2__00015"
+      ],
+      "window_signatures": [
+        "0b63f7bbda0710d15da5c80e6ac2cf56596b40fcc828078295528e03f0510968",
+        "b122cba780869f9954cf2dd5629abea289666ce246351ee3d7d6cd251f716b9a"
+      ]
+    },
+    {
+      "batch_id": "batch_0017_5f271a4d460e",
+      "window_ids": [
+        "nailv_20261003_memories_part2__00016",
+        "nailv_20261003_memories_part2__00017"
+      ],
+      "window_signatures": [
+        "d47791113efcdc3e70b8830be98d115dada18f4e2c55aa156dce7ccdb1542b45",
+        "94e63a718e5f5e848ae76c540379f8e631c40916651aaf0fb46a00a1d4dbf4c2"
+      ]
+    },
+    {
+      "batch_id": "batch_0018_4ec76a03966c",
+      "window_ids": [
+        "nailv_20261003_memories_part2__00018",
+        "nailv_20261003_memories_part2__00019"
+      ],
+      "window_signatures": [
+        "b03059a2f50bc573bc18fe19fee15e684bac13fe7e8c5df94be04d35f34c6d4d",
+        "68e831e6471537d120844076ab87e5f96772d92008cc7aba2c9563f78e566ad9"
+      ]
+    },
+    {
+      "batch_id": "batch_0019_c227ce7c0e47",
+      "window_ids": [
+        "nailv_20261003_memories_part2__00020",
+        "nailv_20260823_daytime_part2__00001"
+      ],
+      "window_signatures": [
+        "4883f5fc816bbcb0a682d624649b09ee37ac25b1d292359ac29c89026be39fec",
+        "8f0d4bfe4188b025ff6d06027236e0cffc83f2697438f75f54de55b73bd6991c"
+      ]
+    },
+    {
+      "batch_id": "batch_0020_1cfabe216158",
+      "window_ids": [
+        "nailv_20260823_daytime_part2__00002",
+        "nailv_20260823_daytime_part2__00003"
+      ],
+      "window_signatures": [
+        "cda564b48c44725a260b4d5ce2014603268680384e973d29ec769a629ac286b8",
+        "57928169f0deb6b6d1a6a7e0cc7452eb1a831c918d5badb7da7ccf45f7ffc12f"
+      ]
+    },
+    {
+      "batch_id": "batch_0021_a5cfb9587e1d",
+      "window_ids": [
+        "nailv_20260823_daytime_part2__00004"
+      ],
+      "window_signatures": [
+        "a08153361ce36cf53cc8113629ce3e46781579466feeca19bf30f79be904a79d"
+      ]
+    }
+  ]
+}
