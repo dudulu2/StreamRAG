@@ -1,122 +1,53 @@
-"""Independent local configuration for StreamRAG's embedding API.
-
-Never import AI-Wife internals or print/commit API keys.
-"""
-from __future__ import annotations
-
-import getpass
+"""Local Qwen setup; inference never downloads or reads cloud credentials."""
 import os
-import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SECRET_FILE = ROOT / ".local-secrets" / "siliconflow-embedding.env"
-DEFAULT_EMBED_MODEL = "BAAI/bge-m3"
-DEFAULT_EMBED_URL = "https://api.siliconflow.cn/v1"
-DEFAULT_KEY_ENV = "STREAM_RAG_EMBED_API_KEY"
+DEFAULT_EMBED_MODEL = "Qwen/Qwen3-Embedding-0.6B"
+MODEL_REVISION = "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3"
+MODEL_WEIGHT_SHA256 = "0437e45c94563b09e13cb7a64478fc406947a93cb34a7e05870fc8dcd48e23fd"
+DEFAULT_MODEL_PATH = ROOT / "qwen"
+DEFAULT_EMBED_URL = "http://127.0.0.1:1234/v1"
 
 
-def _parse_key_file(path: Path) -> str:
-    if not path.exists():
-        return ""
-    if not path.is_file() or path.is_symlink():
-        raise ValueError("Embedding key path must be a regular local file")
-    values = {}
-    for line in path.read_text(encoding="utf-8-sig").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        match = re.fullmatch(
-            r"(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)", stripped
-        )
-        if not match:
-            raise ValueError("Malformed embedding secret file")
-        key, value = match.groups()
-        value = value.strip()
-        if len(value) >= 2 and value[:1] == value[-1:] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        if "\x00" in value or "\n" in value or "\r" in value:
-            raise ValueError("Invalid embedding secret file value")
-        values[key] = value
-    return values.get(DEFAULT_KEY_ENV, "").strip()
+def resolve_api_key(key_env="STREAM_RAG_EMBED_API_KEY"):
+    key = os.getenv(key_env, "").strip()
+    return key, "environment" if key else "missing"
 
 
-def resolve_api_key(key_env=DEFAULT_KEY_ENV, *, env=None, secret_file=None):
-    """Environment wins; project-local secret fallback only for the default key name."""
-    environment = os.environ if env is None else env
-    value = str(environment.get(key_env, "") or "").strip()
-    if value:
-        return value, "environment"
-    if key_env != DEFAULT_KEY_ENV:
-        return "", "missing"
-    value = _parse_key_file(Path(secret_file or SECRET_FILE))
-    return (value, "local-secret-file") if value else ("", "missing")
+def download_model(model_path=DEFAULT_MODEL_PATH):
+    import hashlib
+    from huggingface_hub import snapshot_download
+    # Explicit download operation only; prefer ordinary HTTPS on Windows.
+    from huggingface_hub import constants
+    constants.HF_HUB_DISABLE_XET = True
+    path = snapshot_download(repo_id=DEFAULT_EMBED_MODEL, revision=MODEL_REVISION,
+                             local_dir=str(model_path),
+                             allow_patterns=["*.json", "*.safetensors", "*.txt", "*.model", "*.jinja"])
+    weight = Path(path) / "model.safetensors"
+    with weight.open("rb") as handle:
+        actual = hashlib.file_digest(handle, "sha256").hexdigest()
+    if actual != MODEL_WEIGHT_SHA256:
+        raise ValueError("Downloaded Qwen weight checksum mismatch")
+    # A prior manual aria2 transfer may have left its resume marker.
+    (Path(path) / "model.safetensors.aria2").unlink(missing_ok=True)
+    return {"downloaded": True, "model_path": path, "model": DEFAULT_EMBED_MODEL}
 
 
-def configure_key(key=None, *, secret_file=None, prompt=None):
-    """Persist key without echoing it or passing it through shell arguments."""
-    if key is None:
-        key = (prompt or getpass.getpass)("SiliconFlow Embedding API Key (hidden): ")
-    value = str(key).strip()
-    if (not 16 <= len(value) <= 512
-            or not re.fullmatch(r"[A-Za-z0-9_.-]+", value)
-            or value.lower() in ("paste-your-key-here", "your-api-key", "your-key")):
-        raise ValueError("Invalid API Key format; nothing was saved")
-    destination = Path(secret_file or SECRET_FILE)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.parent.is_symlink():
-        raise ValueError("Refusing to write through a symlinked secret directory")
-    try:
-        os.chmod(destination.parent, 0o700)
-    except OSError:
-        pass
-    if destination.is_symlink():
-        raise ValueError("Refusing to overwrite a symlinked secret")
-    tmp = destination.with_name(destination.name + f".{os.getpid()}.tmp")
-    try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write("# Private StreamRAG key; never commit or share this file.\n")
-            stream.write(f"{DEFAULT_KEY_ENV}={value}\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp, destination)
-        try:
-            os.chmod(destination, 0o600)
-        except OSError:
-            pass
-    finally:
-        if tmp.exists():
-            tmp.unlink()
-    return {"saved": True, "location": "project-local-secret", "key_exposed": False}
-
-
-def embedding_status(model, url, key_env=DEFAULT_KEY_ENV, *, live=False,
-                     client_class=None, env=None, secret_file=None):
-    """Report configuration without exposing key; live=True sends a single API request."""
-    key, source = resolve_api_key(key_env, env=env, secret_file=secret_file)
-    result = {
-        "embedding_model": model,
-        "embedding_url": url,
-        "key_configured": bool(key),
-        "key_source": source,
-        "live_checked": False,
-        "ready_for_live_test": bool(key),
-        "ready_to_ingest": False,
-    }
+def embedding_status(client, *, live=False):
+    result = {"embedding_model": client.model, "mode": client.mode,
+              "live_checked": False, "ready_to_ingest": False}
+    if client.mode == "local":
+        result.update(model_path=str(client.model_path),
+                      model_files_present=all((client.model_path / name).is_file() for name in
+                                              ("config.json", "model.safetensors", "tokenizer.json", "modules.json"))
+                      and not (client.model_path / "model.safetensors.aria2").exists(),
+                      device=client.device, api_key_required=False)
     if live:
-        if not key:
-            raise ValueError(
-                "Missing Embedding API Key. Run embedding-configure first, "
-                "or set STREAM_RAG_EMBED_API_KEY.")
-        if client_class is None:
-            from .retrieval import EmbeddingClient
-            client_class = EmbeddingClient
-        client = client_class(mode="api", model=model, base_url=url, api_key=key)
-        vector = client.embed("今天心情不好时，有人认真听我说话。")
-        result["live_checked"] = True
-        result["ready_to_ingest"] = True
-        result["returned_dimensions"] = len(vector)
-        result["embedding_valid"] = bool(vector) and all(
-            isinstance(v, (int, float)) for v in vector)
+        vectors = client.embed(["今天工作失误让我很难过。"])
+        query = client.embed_query("工作失误后心情不好")
+        result.update(live_checked=True, ready_to_ingest=True,
+                      returned_dimensions=len(query), document_dimensions=len(vectors[0]))
+        if client.mode == "local":
+            result["device"] = str(client._encoder.device)
     return result

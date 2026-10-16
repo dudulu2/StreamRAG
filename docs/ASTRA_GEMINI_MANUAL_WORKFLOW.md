@@ -2,7 +2,7 @@
 
 > 工程目的：**人工或 Agent 处理原文，程序负责证据和版本。**
 > 不需要订阅第三方 RAG 服务，也不需要调用付费 LLM API。
-> 建立真正的语义向量索引仍需要 Embedding：可以接 OpenAI 兼容的本地服务或可用的 Embedding API。测试用 hash-test **不具备真实语义能力**。
+> 建立真正的语义向量索引仍需要 Embedding：默认直接运行本地 Qwen3-Embedding-0.6B。测试用 hash-test **不具备真实语义能力**。
 
 ## 为什么输出不能只有分类词？
 
@@ -101,30 +101,19 @@ Astra：处理好相同或单独目录的请求后，建议另建一份输出：
 - 正式文件使用写入后原子替换，避免因部分失败产生半个批次
 - 所有导入结果默认 web_import_candidate，**不是人工事实核验通过**
 
-## 四、先配置真实 Embedding
+## 四、本地 Qwen Embedding 与入库
 
-默认 SiliconFlow `BAAI/bge-m3`，不依赖 AI-Wife 的记忆库或应用配置；Key 不应上传到公开 GitHub。
+默认使用本项目 `qwen/` 的 Qwen3-Embedding-0.6B，直接本地推理，无需 API Key 或服务端口。
 
 ```powershell
-uv run python scripts/stream_rag.py embedding-configure
-uv run python scripts/stream_rag.py embedding-status
+uv sync
+uv run python scripts/stream_rag.py embedding-download
 uv run python scripts/stream_rag.py embedding-status --live
+uv run python scripts/stream_rag.py ingest --windows data/refined/host01/windows.jsonl --refined data/refined/host01/refined_gemini4.jsonl --db data/lancedb/host01_gemini
+uv run python scripts/stream_rag.py search --db data/lancedb/host01_gemini --query "朋友因为工作失败心情不好时，主播怎么展开话题？"
 ```
 
-第一条命令在终端隐藏输入并保存于 Git 忽略的本地 `.local-secrets/siliconflow-embedding.env`；第二条离线检查 Key 是否配置；第三条显式发送一条联网测试，验证真实服务可用性与向量维度。已有环境变量 `STREAM_RAG_EMBED_API_KEY` 时，环境变量优先于本地文件。没有 Key 时联网测试不会运行。免费额度和速率限制取决于服务商当前政策。
-
-## 五、建立 RAG 索引并搜索
-
-语义向量模型可以是外部 Embedding 接口，也可以是**本机运行的、提供 OpenAI-compatible /v1/embeddings 接口的服务**。例如已在本机正常启动相关服务时：
-
-    $env:STREAM_RAG_EMBED_API_KEY = "local-only-placeholder"
-    uv run python scripts/stream_rag.py ingest --windows data/refined/host01/windows.jsonl --refined data/refined/host01/refined_gemini4.jsonl --db data/lancedb/host01_gemini --embed-url http://127.0.0.1:1234/v1 --embed-model LOCAL_MODEL_ID
-
-**端口与 LOCAL_MODEL_ID 必须填写你实际运行的本地服务值，不是本仓库自动启动的服务**。如果用云端 Embedding，则按 README 配置相应密钥。
-
-使用相同 embedding 模型搜索：
-
-    uv run python scripts/stream_rag.py search --db data/lancedb/host01_gemini --query "朋友因为工作失败心情不好时，主播怎么展开话题？" --embed-url http://127.0.0.1:1234/v1 --embed-model LOCAL_MODEL_ID
+下载只需首次执行，后续推理只读取本地文件。已有模型可通过 `--embed-model-path` 指定；CPU 可用 `--embed-device cpu`。旧向量库需重新建库，不可混用其他模型的向量。
 
 不用任何 Embedding 调用的本地关键词搜索：
 

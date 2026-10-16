@@ -23,13 +23,16 @@ from streamrag.retrieval import (
 )
 from streamrag.manual import export_batches, import_responses, validate_import
 from streamrag.embedding_setup import (
-    DEFAULT_EMBED_MODEL, DEFAULT_EMBED_URL, configure_key,
+    DEFAULT_EMBED_MODEL, DEFAULT_EMBED_URL, DEFAULT_MODEL_PATH, download_model,
     embedding_status, resolve_api_key,
 )
 
 
 def embedding_client(args):
     mode = args.embed_mode
+    if mode == "local":
+        from streamrag.local_embedding import LocalQwenEmbedding
+        return LocalQwenEmbedding(args.embed_model_path, args.embed_device, args.embed_local_batch_size)
     key, _ = resolve_api_key(args.embed_key_env)
     if mode == "hash-test" and not args.allow_test_embeddings:
         raise ValueError("hash-test requires --allow-test-embeddings; never use it in production")
@@ -50,7 +53,10 @@ def reranker_client(args):
 
 
 def add_embed_flags(parser):
-    parser.add_argument("--embed-mode", choices=("api", "hash-test"), default="api")
+    parser.add_argument("--embed-mode", choices=("local", "api", "hash-test"), default="local")
+    parser.add_argument("--embed-model-path", type=Path, default=os.getenv("STREAM_RAG_EMBED_MODEL_PATH", str(DEFAULT_MODEL_PATH)))
+    parser.add_argument("--embed-device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument("--embed-local-batch-size", type=int, default=1)
     parser.add_argument("--allow-test-embeddings", action="store_true")
     parser.add_argument("--embed-model", default=os.getenv(
         "STREAM_RAG_EMBED_MODEL", DEFAULT_EMBED_MODEL))
@@ -61,7 +67,7 @@ def add_embed_flags(parser):
 
 def add_llm_flags(parser):
     parser.add_argument("--llm-url", default=os.getenv(
-        "STREAM_RAG_LLM_URL", "https://api.siliconflow.cn/v1"))
+        "STREAM_RAG_LLM_URL", ""))
     parser.add_argument("--llm-model", default=os.getenv("STREAM_RAG_LLM_MODEL", ""))
     parser.add_argument("--llm-key-env", default="STREAM_RAG_LLM_API_KEY")
     parser.add_argument("--limit", type=int, default=None,
@@ -94,12 +100,14 @@ def main(argv=None):
         description="LLM refine -> local LanceDB hybrid retrieval (Eidolon-style, not Eidolon source code)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("embedding-configure", help="Save an Embedding API key privately (hidden prompt)")
+    p = sub.add_parser("embedding-download", help="Download Qwen model once; inference stays offline")
+    p.add_argument("--embed-model-path", type=Path, default=os.getenv(
+        "STREAM_RAG_EMBED_MODEL_PATH", str(DEFAULT_MODEL_PATH)))
 
     p = sub.add_parser("embedding-status", help="Inspect embedding config without exposing secrets")
     add_embed_flags(p)
     p.add_argument("--live", action="store_true",
-                   help="Explicitly send one test embedding request to the provider")
+                   help="Load the configured model and verify document/query embeddings")
 
     p = sub.add_parser("prepare", help="Normalize transcripts into five-minute windows")
     add_source_flags(p)
@@ -173,13 +181,12 @@ def main(argv=None):
         args.retries < 0 or args.retries > 5 or (args.limit is not None and args.limit < 1)
     ):
         parser.error("Invalid LLM retries or limit")
-    if args.command == "embedding-configure":
-        result = configure_key()
+    if args.command == "embedding-download":
+        result = download_model(args.embed_model_path)
     elif args.command == "embedding-status":
-        if args.embed_mode != "api":
-            raise ValueError("embedding-status only supports real API mode")
-        result = embedding_status(
-            args.embed_model, args.embed_url, args.embed_key_env, live=args.live)
+        if args.embed_mode == "hash-test":
+            raise ValueError("embedding-status requires a real model")
+        result = embedding_status(embedding_client(args), live=args.live)
     elif args.command == "prepare":
         rows = prepare(args.input, args.output, args.speaker_id, args.source_id,
                        args.metadata, args.max_window_chars, args.duration_seconds)

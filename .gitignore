@@ -27,3 +27,8 @@ data/lancedb/**
 Thumbs.db
 .vscode/
 .idea/
+
+# Downloaded local embedding model
+qwen/
+
+.downloads/

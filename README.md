@@ -29,17 +29,24 @@ StreamRAG/
     └── lancedb/                 # 本地索引库（忽略 Git）
 ```
 
-## 免费 Embedding 配置（BGE-M3）
+## 本地 Qwen3-Embedding-0.6B
 
-默认使用 SiliconFlow `BAAI/bge-m3`。在本项目根目录执行：
+默认直接加载本项目 `qwen/` 内的官方模型，使用本机 GPU（无 CUDA 时使用 CPU）。无需 API Key，无需启动 Embedding 服务，不读取旧云端密钥，也不会回退到云端。
 
 ```powershell
-uv run python scripts/stream_rag.py embedding-configure
+uv sync --python 3.12
+uv run python scripts/stream_rag.py embedding-download
 uv run python scripts/stream_rag.py embedding-status
 uv run python scripts/stream_rag.py embedding-status --live
 ```
 
-第一条命令隐藏输入并将 Key 保存在 `.local-secrets/siliconflow-embedding.env`（Git 忽略）；第二条离线检查配置，第三条在授权下发送一条真实 Embedding 请求，不会打印密钥。当前没有发现本机已配置的 Key，必须先输入你自己的 SiliconFlow Key。API 的免费额度仍以服务提供者实际计费规则为准。
+下载命令只需首次运行，权重约 1.2 GB，支持续传；`qwen/` 已被 Git 忽略。`--live` 实际加载本地模型并检查文档和查询的 1024 维向量。之后建库和查询完全离线。本地推理依赖已纳入默认安装。
+
+可以用 `--embed-model-path D:/path/to/model` 或 `STREAM_RAG_EMBED_MODEL_PATH` 复用模型；`--embed-device cpu` 强制 CPU。默认 GPU 内部推理批次为 1，可用 `--embed-local-batch-size` 调整。
+
+查询添加任务指令，文档不加指令；输出单位归一化向量，按 cosine 检索。模型配置和查询编码契约写入索引，配置变化会拒绝混用；旧 BGE/API/hash 索引必须用真实本地模型重建。仅关键词检索不加载模型。
+
+官方模型说明：https://huggingface.co/Qwen/Qwen3-Embedding-0.6B
 
 ## 安装与测试（Windows PowerShell）
 
@@ -82,12 +89,12 @@ uv run python scripts/stream_rag.py validate --windows data/refined/nailv/window
 uv run python scripts/stream_rag.py prepare --input data/transcripts/nailv --speaker-id nailv --output data/refined/nailv/windows.jsonl
 ```
 
-配置兼容 OpenAI Chat Completions 的 LLM 和 Embedding 端点后，执行：
+网页批次不需要 LLM API。可选自动精炼需显式指定自己的 Chat Completions 端点；没有默认云端服务。Embedding 始终默认本地 Qwen。执行：
 
 ```powershell
+$env:STREAM_RAG_LLM_URL = "你选择的 Chat Completions 服务地址"
 $env:STREAM_RAG_LLM_MODEL = "你实际可用的模型 ID"
 $env:STREAM_RAG_LLM_API_KEY = "从安全密钥管理方式获取，不要存入 Git"
-$env:STREAM_RAG_EMBED_API_KEY = "从安全密钥管理方式获取，不要存入 Git"
 
 uv run python scripts/stream_rag.py refine --windows data/refined/nailv/windows.jsonl --output data/refined/nailv/refined_streams.jsonl --limit 3
 
@@ -100,7 +107,7 @@ uv run python scripts/stream_rag.py report --refined data/refined/nailv/refined_
 uv run python scripts/stream_rag.py search --db data/lancedb/nailv --query "对工作失误后感到难受的人如何回应？"
 ```
 
-若使用的 LLM 或 Embedding 不在默认 SiliconFlow 地址，可分别指定 `--llm-url`、`--llm-model`、`--embed-url`、`--embed-model`。API Key 仅从环境变量读取；**不要求调用任何其他人托管的 RAG 服务**。
+可选 API 后端只有显式设置 `--embed-mode api` 才会使用；本地默认模式不会读取 API Key。LLM API 精炼需通过 `--llm-url`、`--llm-model` 或对应环境变量指定。
 
 完全不调用 Embedding API 的本地 BM25 检索：
 
@@ -120,6 +127,6 @@ uv run python scripts/stream_rag.py search --db data/lancedb/nailv --query "工�
 - `stream_catalog.json` 只供语料来源追溯，不是聊天角色的日程。
 - `--embed-mode hash-test --allow-test-embeddings` 为**测试替身**，不可作为生产向量使用。
 - 公开的直播字幕、音频、整理稿仍需核对各自许可。
-- 已通过 39 项本地回归测试，包括断点污染复现修复、LLM 故障恢复和索引发布回滚；尚未用真实约 10 万字直播文本完成完整 LLM + 真正 Embedding 的检索质量评测。
+- 具备本地回归测试，包括断点污染复现修复、LLM 故障恢复和索引发布回滚；尚未用真实约 10 万字直播文本完成完整 LLM + 真正 Embedding 的检索质量评测。
 
 更完整的字段和操作说明见 [docs/STREAM_RAG_EIDOLON_BASELINE.md](docs/STREAM_RAG_EIDOLON_BASELINE.md)。
