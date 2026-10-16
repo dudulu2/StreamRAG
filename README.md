@@ -1,5 +1,11 @@
 # StreamRAG
 
+## AI-Wife 只读接入（2026-10-16）
+
+新增常驻 `scripts/companion_worker.py`：预热本地 Qwen 后通过 stdin/stdout JSONL 返回带作者归属的事实、互动和原话候选，不写聊天应用的记忆。AI-Wife 新角色启动命令为 `npm run m0:streamrag`，旧角色和旧记忆保留。协议与边界见 [COMPANION_READONLY_WORKER.md](docs/COMPANION_READONLY_WORKER.md)。
+
+本地修订语料和 Gemini 输出继续保留在本机，但 `data/attribution/` 与 `gemini_output/` 不随本次代码提交公开。
+
 **独立的直播文本 → Gemini 网页版 / Astra 本地 / 可选 LLM API 精炼 → LanceDB 检索库工具。**
 
 路径：`D:\project\ai\StreamRAG`。无需安装或导入 AI-Wife，也不读取 AI-Wife 的配置、Persona 或用户记忆。

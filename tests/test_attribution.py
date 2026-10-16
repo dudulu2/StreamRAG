@@ -26,6 +26,8 @@ class FakeEmbedding:
 class AttributionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if not all(p.is_file() for p in (W,A,P,R/"manifest.json")):
+            raise unittest.SkipTest("Local reviewed corpus is intentionally not published")
         cls.units,cls.annotations,_,cls.audit,cls.report=prepare(W,A,P)
         cls.windows={w["id"]:w for w in read_jsonl(W)}
     def unit(self,suffix):
@@ -89,6 +91,8 @@ class AttributionTests(unittest.TestCase):
 class RetrievalTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if not all(p.is_file() for p in (W,R/"manifest.json",R/"records.jsonl",R/"author_spans.jsonl")):
+            raise unittest.SkipTest("Local reviewed corpus is intentionally not published")
         cls.temp=tempfile.TemporaryDirectory();cls.index=Path(cls.temp.name)/"index"
         cls.embed=FakeEmbedding()
         build(R,W,cls.index,cls.embed)
