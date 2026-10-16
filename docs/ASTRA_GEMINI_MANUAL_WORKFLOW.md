@@ -101,7 +101,19 @@ Astra：处理好相同或单独目录的请求后，建议另建一份输出：
 - 正式文件使用写入后原子替换，避免因部分失败产生半个批次
 - 所有导入结果默认 web_import_candidate，**不是人工事实核验通过**
 
-## 四、建立 RAG 索引并搜索
+## 四、先配置真实 Embedding
+
+默认 SiliconFlow `BAAI/bge-m3`，不依赖 AI-Wife 的记忆库或应用配置；Key 不应上传到公开 GitHub。
+
+```powershell
+uv run python scripts/stream_rag.py embedding-configure
+uv run python scripts/stream_rag.py embedding-status
+uv run python scripts/stream_rag.py embedding-status --live
+```
+
+第一条命令在终端隐藏输入并保存于 Git 忽略的本地 `.local-secrets/siliconflow-embedding.env`；第二条离线检查 Key 是否配置；第三条显式发送一条联网测试，验证真实服务可用性与向量维度。已有环境变量 `STREAM_RAG_EMBED_API_KEY` 时，环境变量优先于本地文件。没有 Key 时联网测试不会运行。免费额度和速率限制取决于服务商当前政策。
+
+## 五、建立 RAG 索引并搜索
 
 语义向量模型可以是外部 Embedding 接口，也可以是**本机运行的、提供 OpenAI-compatible /v1/embeddings 接口的服务**。例如已在本机正常启动相关服务时：
 

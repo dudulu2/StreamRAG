@@ -29,6 +29,18 @@ StreamRAG/
     └── lancedb/                 # 本地索引库（忽略 Git）
 ```
 
+## 免费 Embedding 配置（BGE-M3）
+
+默认使用 SiliconFlow `BAAI/bge-m3`。在本项目根目录执行：
+
+```powershell
+uv run python scripts/stream_rag.py embedding-configure
+uv run python scripts/stream_rag.py embedding-status
+uv run python scripts/stream_rag.py embedding-status --live
+```
+
+第一条命令隐藏输入并将 Key 保存在 `.local-secrets/siliconflow-embedding.env`（Git 忽略）；第二条离线检查配置，第三条在授权下发送一条真实 Embedding 请求，不会打印密钥。当前没有发现本机已配置的 Key，必须先输入你自己的 SiliconFlow Key。API 的免费额度仍以服务提供者实际计费规则为准。
+
 ## 安装与测试（Windows PowerShell）
 
 在本项目目录执行：

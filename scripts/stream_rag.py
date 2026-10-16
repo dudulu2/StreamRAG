@@ -22,11 +22,15 @@ from streamrag.retrieval import (
     EmbeddingClient, CohereReranker, build_index, search, evaluate,
 )
 from streamrag.manual import export_batches, import_responses, validate_import
+from streamrag.embedding_setup import (
+    DEFAULT_EMBED_MODEL, DEFAULT_EMBED_URL, configure_key,
+    embedding_status, resolve_api_key,
+)
 
 
 def embedding_client(args):
     mode = args.embed_mode
-    key = os.getenv(args.embed_key_env, "")
+    key, _ = resolve_api_key(args.embed_key_env)
     if mode == "hash-test" and not args.allow_test_embeddings:
         raise ValueError("hash-test requires --allow-test-embeddings; never use it in production")
     return EmbeddingClient(mode=mode, model=args.embed_model,
@@ -49,9 +53,9 @@ def add_embed_flags(parser):
     parser.add_argument("--embed-mode", choices=("api", "hash-test"), default="api")
     parser.add_argument("--allow-test-embeddings", action="store_true")
     parser.add_argument("--embed-model", default=os.getenv(
-        "STREAM_RAG_EMBED_MODEL", "BAAI/bge-large-zh-v1.5"))
+        "STREAM_RAG_EMBED_MODEL", DEFAULT_EMBED_MODEL))
     parser.add_argument("--embed-url", default=os.getenv(
-        "STREAM_RAG_EMBED_URL", "https://api.siliconflow.cn/v1"))
+        "STREAM_RAG_EMBED_URL", DEFAULT_EMBED_URL))
     parser.add_argument("--embed-key-env", default="STREAM_RAG_EMBED_API_KEY")
 
 
@@ -89,6 +93,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description="LLM refine -> local LanceDB hybrid retrieval (Eidolon-style, not Eidolon source code)")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("embedding-configure", help="Save an Embedding API key privately (hidden prompt)")
+
+    p = sub.add_parser("embedding-status", help="Inspect embedding config without exposing secrets")
+    add_embed_flags(p)
+    p.add_argument("--live", action="store_true",
+                   help="Explicitly send one test embedding request to the provider")
 
     p = sub.add_parser("prepare", help="Normalize transcripts into five-minute windows")
     add_source_flags(p)
@@ -162,7 +173,14 @@ def main(argv=None):
         args.retries < 0 or args.retries > 5 or (args.limit is not None and args.limit < 1)
     ):
         parser.error("Invalid LLM retries or limit")
-    if args.command == "prepare":
+    if args.command == "embedding-configure":
+        result = configure_key()
+    elif args.command == "embedding-status":
+        if args.embed_mode != "api":
+            raise ValueError("embedding-status only supports real API mode")
+        result = embedding_status(
+            args.embed_model, args.embed_url, args.embed_key_env, live=args.live)
+    elif args.command == "prepare":
         rows = prepare(args.input, args.output, args.speaker_id, args.source_id,
                        args.metadata, args.max_window_chars, args.duration_seconds)
         result = {"prepared_windows": len(rows), "output": str(args.output)}
